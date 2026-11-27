@@ -61,9 +61,14 @@ try {
 
   const list = await request('/api/articles');
   assert.equal((await list.json()).total, 2);
+  const edit = await request(`/api/articles/${article.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ summary: 'संपादित सारांश' }) });
+  assert.equal((await edit.json()).summary, 'संपादित सारांश');
   const sources = await request('/api/sources', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Test RSS', url: 'https://example.test/feed.xml' }) });
   assert.equal(sources.status, 201);
+  const source = await sources.json();
   assert.equal((await request('/api/sources')).status, 200);
+  const sourceUpdate = await request(`/api/sources/${source.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled: false }) });
+  assert.equal((await sourceUpdate.json()).enabled, false);
   const audit = await request('/api/audit');
   assert.equal(audit.status, 200);
   assert.ok((await audit.json()).length > 0);
@@ -72,7 +77,11 @@ try {
   assert.equal(logout.status, 204);
   const denied = await request('/api/articles');
   assert.equal(denied.status, 401);
-  console.log('Integration flow passed: Mongo-backed health ping, session auth, article creation/review/publishing, source and audit routes, public article, RSS and sitemap.');
+  const login = await request('/api/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'admin@example.test', password: 'strong-test-password-123' }) });
+  assert.equal(login.status, 200);
+  assert.equal((await login.json()).user.role, 'SUPER_ADMIN');
+  assert.equal((await request('/api/auth/logout', { method: 'POST' })).status, 204);
+  console.log('Integration flow passed: Mongo-backed health ping, setup/login/logout sessions, article review/edit/publishing, source and audit routes, public article, RSS and sitemap.');
 } finally {
   await new Promise(resolve => server.close(resolve));
   await delay(20);

@@ -46,7 +46,10 @@ try {
     }).filter(Boolean);
     if (!rows.length) continue;
     const collection = db.collection(collectionName);
-    const result = await collection.bulkWrite(rows.map(document => ({ updateOne: { filter: { _id: document._id }, update: { $setOnInsert: document }, upsert: true } })), { ordered: false });
+    const result = await collection.bulkWrite(rows.map(document => {
+      const { _id, ...values } = document;
+      return { updateOne: { filter: { _id }, update: { $setOnInsert: values }, upsert: true } };
+    }), { ordered: false });
     console.log(`${table}: ${result.upsertedCount} inserted; existing records left unchanged`);
   }
   console.log('Import finished. The SQLite source file was not modified or deleted.');
