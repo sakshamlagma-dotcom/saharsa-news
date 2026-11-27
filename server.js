@@ -42,6 +42,43 @@ function escapeHtml(value) {
 function escapeXml(value) {
   return String(value || '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c]));
 }
+function startupError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  error.safeMessage = message;
+  return error;
+}
+function safeDriverCode(value) {
+  if (typeof value === 'number') return value;
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(value) ? value : undefined;
+}
+
+export function validateStartupEnvironment(env = process.env, log = message => console.info(message)) {
+  const uri = typeof env.MONGODB_URI === 'string' ? env.MONGODB_URI : '';
+  const uriConfigured = Boolean(uri.trim());
+  const uriScheme = uri.match(/^(mongodb(?:\+srv)?):\/\//i)?.[1]?.toLowerCase() || null;
+  const production = env.NODE_ENV === 'production';
+  const sessionSecretValid = !production || (typeof env.SESSION_SECRET === 'string' && env.SESSION_SECRET.length >= 32);
+  const port = env.PORT === undefined || env.PORT === '' ? 4310 : Number(env.PORT);
+  const portValid = Number.isInteger(port) && port > 0 && port <= 65535;
+  log(JSON.stringify({
+    event: 'startup_config',
+    nodeVersion: process.versions.node,
+    nodeMajor: Number(process.versions.node.split('.')[0]),
+    production,
+    portConfigured: env.PORT !== undefined && env.PORT !== '',
+    portValid,
+    mongodbUriConfigured: uriConfigured,
+    mongodbUriScheme: uriScheme,
+    sessionSecretConfigured: Boolean(env.SESSION_SECRET),
+    sessionSecretValid
+  }));
+  if (!uriConfigured) throw startupError('MISSING_MONGODB_URI', 'Required environment variable MONGODB_URI is missing.');
+  if (!uriScheme) throw startupError('INVALID_MONGODB_URI_FORMAT', 'MONGODB_URI must use mongodb:// or mongodb+srv://. Its value was not logged.');
+  if (production && !sessionSecretValid) throw startupError('INVALID_SESSION_SECRET', 'SESSION_SECRET must be set to at least 32 characters in production. Its value was not logged.');
+  if (!portValid) throw startupError('INVALID_PORT', 'PORT must be an integer from 1 through 65535.');
+  return { port };
+}
 
 export async function ensureIndexes(db) {
   await Promise.all([
@@ -357,27 +394,48 @@ export function createApp({ db, env = process.env } = {}) {
   return app;
 }
 
-export async function connectDatabase(env = process.env) {
-  if (!env.MONGODB_URI) throw new Error('MONGODB_URI is required to start Saharsa News.');
-  const client = new MongoClient(env.MONGODB_URI, { appName: 'saharsa-news-render', serverSelectionTimeoutMS: 10000 });
+export async function connectDatabase(env = process.env, { validated = false } = {}) {
+  if (!validated) validateStartupEnvironment(env);
+  let client;
   try {
+    client = new MongoClient(env.MONGODB_URI, { appName: 'saharsa-news-render', serverSelectionTimeoutMS: 10000 });
     await client.connect();
-    const db = client.db(env.MONGODB_DB || 'saharsa_news');
+    const db = client.db(env.MONGODB_DB?.trim() || 'saharsa_news');
     await db.command({ ping: 1 });
     await ensureIndexes(db);
     return { client, db };
   } catch (error) {
-    await client.close().catch(() => {});
-    console.error('MongoDB startup failed; check connectivity and MONGODB_URI configuration.', error?.name || 'MongoError', error?.code || '');
-    throw new Error('Could not connect to MongoDB. Check the Render environment variables and Atlas network access.');
+    await client?.close().catch(() => {});
+    console.error(JSON.stringify({
+      event: 'mongodb_startup_failed',
+      errorType: typeof error?.name === 'string' ? error.name : 'MongoError',
+      errorCode: safeDriverCode(error?.code),
+      causeType: typeof error?.cause?.name === 'string' ? error.cause.name : undefined,
+      causeCode: safeDriverCode(error?.cause?.code)
+    }));
+    throw startupError('MONGODB_CONNECT_FAILED', 'MongoDB connection failed. Check Atlas network access and the Render MONGODB_URI setting; secret values were not logged.');
   }
 }
 
 export async function startServer(env = process.env) {
-  const { client, db } = await connectDatabase(env);
-  const app = createApp({ db, env });
-  const port = Number(env.PORT) || 4310;
-  const server = app.listen(port, '0.0.0.0', () => console.log(`Saharsa News listening on 0.0.0.0:${port}`));
+  const { port } = validateStartupEnvironment(env);
+  const { client, db } = await connectDatabase(env, { validated: true });
+  let server;
+  try {
+    const app = createApp({ db, env });
+    server = app.listen(port, '0.0.0.0');
+    await new Promise((resolve, reject) => {
+      server.once('listening', resolve);
+      server.once('error', reject);
+    });
+  } catch (error) {
+    if (server) await new Promise(resolve => server.close(resolve));
+    await client.close().catch(() => {});
+    const code = safeDriverCode(error?.code) || 'HTTP_LISTEN_FAILED';
+    console.error(JSON.stringify({ event: 'http_startup_failed', errorCode: code, errorType: error?.name || 'Error' }));
+    throw startupError('HTTP_LISTEN_FAILED', 'HTTP server could not bind to the configured PORT.');
+  }
+  console.info(JSON.stringify({ event: 'http_listening', host: '0.0.0.0', port, nodeVersion: process.versions.node }));
   const shutdown = () => server.close(() => client.close().finally(() => process.exit(0)));
   process.once('SIGTERM', shutdown);
   process.once('SIGINT', shutdown);
@@ -386,7 +444,7 @@ export async function startServer(env = process.env) {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   startServer().catch(error => {
-    console.error(error.message);
+    console.error(JSON.stringify({ event: 'startup_failed', code: safeDriverCode(error?.code) || 'STARTUP_FAILED', message: error?.safeMessage || 'Server startup failed. See the sanitized startup diagnostics above.' }));
     process.exitCode = 1;
   });
 }

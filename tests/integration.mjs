@@ -1,7 +1,16 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import assert from 'node:assert/strict';
-import { createApp } from '../server.js';
+import { createApp, validateStartupEnvironment } from '../server.js';
 import { MemoryDatabase } from './memory-mongo.js';
+
+const startupLogs = [];
+assert.throws(() => validateStartupEnvironment({ NODE_ENV: 'production', SESSION_SECRET: 'test-only-secret-0123456789012345' }, line => startupLogs.push(line)), error => error.code === 'MISSING_MONGODB_URI');
+const missingUriLog = JSON.parse(startupLogs.at(-1));
+assert.equal(missingUriLog.mongodbUriConfigured, false);
+assert.equal(startupLogs.join('\n').includes('test-only-secret'), false, 'startup diagnostics must not include secrets');
+assert.throws(() => validateStartupEnvironment({ NODE_ENV: 'production', MONGODB_URI: 'mongodb+srv://example.invalid/saharsa_news' }, line => startupLogs.push(line)), error => error.code === 'INVALID_SESSION_SECRET');
+assert.equal(startupLogs.join('\n').includes('mongodb+srv://'), false, 'startup diagnostics must not include connection strings');
+assert.equal(validateStartupEnvironment({ NODE_ENV: 'test', MONGODB_URI: 'mongodb://localhost/saharsa_news', PORT: '10000' }, line => startupLogs.push(line)).port, 10000);
 
 const db = new MemoryDatabase();
 const app = createApp({ db, env: { ...process.env, NODE_ENV: 'test', SESSION_SECRET: 'integration-test-session-secret-0123456789' } });

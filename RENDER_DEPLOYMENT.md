@@ -2,6 +2,8 @@
 
 This service runs the existing Express API and frontend from the repository root. Runtime data is stored in MongoDB Atlas; the service does not create, reset, or remove a database at startup.
 
+The project declares Node.js `>=20.19.0 <27`; the MongoDB Node driver 7.x requires Node.js 20.19 or newer. The check and integration suite were also run under Node.js 26.13.1.
+
 ## Render Web Service settings
 
 Connect `sakshamlagma-dotcom/saharsa-news` and deploy branch `main` with:
@@ -59,6 +61,8 @@ The workspace SQLite file checked during this migration currently has zero rows 
 With `MONGODB_URI` set in the local environment, `npm run check:mongodb` performs a MongoDB ping and prints only success or a sanitized error class/code. The deployed `/api/health` endpoint also pings MongoDB; it returns HTTP 200 only when the database is reachable and HTTP 503 otherwise.
 
 After Render deploys, check the service URL at `/api/health`, then check Render logs for the startup result. Never include a connection URI or password in logs, issue reports, or source files.
+
+Startup logs emit a JSON `startup_config` record containing only Node version, whether each required setting is present/valid, URI scheme, and whether `PORT` is valid. Failures use stable codes such as `MISSING_MONGODB_URI`, `INVALID_SESSION_SECRET`, `MONGODB_CONNECT_FAILED`, or `HTTP_LISTEN_FAILED`. They never print the URI, secret, or raw driver error message.
 
 ## Free instance behavior
 
