@@ -323,6 +323,7 @@ export function createApp({ db, env = process.env, rssFetcher = fetchRssFeed } =
   app.use(express.json({ limit: '1mb' }));
   app.use(session({ store: new MongoSessionStore(sessions), secret: env.SESSION_SECRET || 'dev-only-change-this-secret-before-deploy', resave: false, saveUninitialized: false, cookie: { httpOnly: true, sameSite: 'lax', secure: env.NODE_ENV === 'production', maxAge: 1000 * 60 * 60 * 12 } }));
   app.use('/api', rateLimit({ windowMs: 15 * 60 * 1000, limit: 600, standardHeaders: true, legacyHeaders: false }));
+  app.get('/admin', (_req, res) => res.sendFile(path.join(root, 'public', 'admin.html')));
   app.use(express.static(path.join(root, 'public')));
 
   app.get('/api/health', async (_req, res) => {
@@ -596,7 +597,6 @@ export function createApp({ db, env = process.env, rssFetcher = fetchRssFeed } =
     res.json({ enabled: req.body.enabled });
   });
 
-  app.get('/admin', (_req, res) => res.sendFile(path.join(root, 'public', 'admin.html')));
   app.get('/api/public/articles', async (_req, res) => {
     const limit = Math.min(50, Math.max(1, Number(_req.query.limit) || 20));
     const rows = await articles.find({ status: 'PUBLISHED' }).sort({ published_at: -1 }).limit(limit).toArray();

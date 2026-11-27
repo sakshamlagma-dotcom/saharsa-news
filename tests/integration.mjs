@@ -48,6 +48,9 @@ try {
   const health = await request('/api/health');
   assert.equal(health.status, 200, 'health requires a successful MongoDB ping');
   assert.equal((await health.json()).database, 'mongodb');
+  const adminPage = await fetch(`${base}/admin`);
+  assert.equal(adminPage.status, 200);
+  assert.match(await adminPage.text(), /RSS Feed प्रबंधन/, 'the /admin route serves the current RSS management UI');
   assert.equal((await request('/api/sources')).status, 401, 'RSS management requires an authenticated SUPER_ADMIN');
 
   const first = await request('/api/auth/me');
