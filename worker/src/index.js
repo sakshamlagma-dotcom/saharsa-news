@@ -10,8 +10,10 @@ const categories=['सहरसा','राजनीति','अपराध','�
 const sensitive=/अपराध|हत्या|दुर्घटना|आरोप|बलात्कार|चोरी|पुलिस|राजनीति|घायल|मौत|मृत्यु|crime|death|accident|allegation/i;
 const now=()=>new Date();
 
+const safeErrorCodes=new Set(['ETIMEDOUT','ECONNREFUSED','ECONNRESET','ENOTFOUND','EAI_AGAIN','ENETUNREACH','EHOSTUNREACH','ERR_TLS_CERT_ALTNAME_INVALID','CERT_HAS_EXPIRED']);
+function safeMongoFailure(error){const raw=String(error?.message||''),causeCode=error?.code||error?.cause?.code,code=safeErrorCodes.has(causeCode)?causeCode:undefined,names=new Set(['MongoServerSelectionError','MongoNetworkError','MongoParseError','MongoServerError','MongoRuntimeError','MongoTopologyClosedError','Error']),name=names.has(error?.name)?error.name:'MongoError';let reason='mongo_connection_failed',safeMessage='MongoDB connection failed';if(/proxy request failed, cannot connect to the specified address/i.test(raw)){reason='cloudflare_disallowed_destination';safeMessage='proxy request failed, cannot connect to the specified address'}else if(/querysrv|enotfound|eai_again|no addresses found|dns/i.test(raw)){reason='dns_resolution_failed';safeMessage='MongoDB DNS resolution failed'}else if(/econnrefused/i.test(raw)){reason='connection_refused';safeMessage='MongoDB TCP connection refused'}else if(/etimedout|timed out/i.test(raw)){reason='connection_timeout';safeMessage='MongoDB connection timed out'}else if(/econnreset/i.test(raw)){reason='connection_reset';safeMessage='MongoDB TCP connection reset'}else if(/authentication failed|bad auth/i.test(raw)){reason='authentication_failed';safeMessage='MongoDB authentication failed'}else if(/certificate|tls/i.test(raw)){reason='tls_failure';safeMessage='MongoDB TLS connection failed'}return {name,code,reason,message:safeMessage}}
 async function getDb(env){const client=new MongoClient(env.MONGODB_URI,{maxPoolSize:1,minPoolSize:0,serverSelectionTimeoutMS:6000,maxIdleTimeMS:20000});await client.connect();return {client,db:client.db(env.MONGODB_DB||'saharsa_news')}}
-app.use('/api/*',async(c,next)=>{if(!c.env.MONGODB_URI)return c.json({error:'MONGODB_URI secret is not configured.'},503);let client;try{const conn=await getDb(c.env);client=conn.client;c.set('db',conn.db);await bootstrap(conn.db,c.env.MONGODB_URI);await next()}catch(e){console.error('worker_request_failed',String(e?.message||e).slice(0,250));return c.json({error:'Service temporarily unavailable.'},503)}finally{if(client)await client.close().catch(()=>{})}});
+app.use('/api/*',async(c,next)=>{if(!c.env.MONGODB_URI)return c.json({error:'MONGODB_URI secret is not configured.'},503);let client;try{const conn=await getDb(c.env);client=conn.client;c.set('db',conn.db);await bootstrap(conn.db,c.env.MONGODB_URI);await next()}catch(e){console.error('worker_request_failed',safeMongoFailure(e));return c.json({error:'Service temporarily unavailable.'},503)}finally{if(client)await client.close().catch(()=>{})}});
 const dbOf=c=>c.get('db');
 const clean=s=>String(s||'').replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim();
 export const safeRemoteUrl=u=>{const h=u.hostname.toLowerCase();return ['http:','https:'].includes(u.protocol)&&!u.username&&!u.password&&!['localhost','localhost.localdomain','::1','[::1]'].includes(h)&&!h.endsWith('.local')&&!h.endsWith('.internal')&&!/^127\./.test(h)&&!/^10\./.test(h)&&!/^192\.168\./.test(h)&&!/^169\.254\./.test(h)&&!/^172\.(1[6-9]|2\d|3[01])\./.test(h)&&!/^\[?(fc|fd|fe80):/i.test(h)};
@@ -63,11 +65,11 @@ app.post('/api/ingest',auth,roles('SUPER_ADMIN','ADMIN','EDITOR'),async c=>json(
 app.get('/api/audit',auth,roles('SUPER_ADMIN','ADMIN'),async c=>{const rows=await dbOf(c).collection('audit_logs').find().sort({createdAt:-1}).limit(Math.min(100,Number(c.req.query('limit'))||50)).toArray();return json(c,rows)});
 
 app.get('/api/automation/jobs/:id',auth,roles('SUPER_ADMIN','ADMIN','EDITOR'),async c=>{const job=await dbOf(c).collection('automation_jobs').findOne({_id:c.req.param('id')});return job?json(c,job):c.body(null,404)});
-app.onError((e,c)=>{console.error('unhandled_worker_error',String(e?.message||e).slice(0,240));return c.json({error:'Unexpected service error.'},500)});
+app.onError((e,c)=>{console.error('unhandled_worker_error',safeMongoFailure(e));return c.json({error:'Unexpected service error.'},500)});
 app.notFound(c=>c.json({error:'API route नहीं मिला।'},404));
 
 export default {
   fetch:(request,env,ctx)=>app.fetch(request,env,ctx),
-  async scheduled(_event,env,ctx){ctx.waitUntil((async()=>{const {client,db}=await getDb(env);try{await bootstrap(db,env.MONGODB_URI);await discover(db,env,1)}finally{await client.close()}})())}
+  async scheduled(_event,env,ctx){if(!env.MONGODB_URI){console.error('cron_skipped_missing_mongodb_uri');return}ctx.waitUntil((async()=>{let client;try{const conn=await getDb(env);client=conn.client;await bootstrap(conn.db,env.MONGODB_URI);await discover(conn.db,env,1)}catch(error){console.error('worker_cron_failed',safeMongoFailure(error))}finally{if(client)await client.close().catch(()=>{})}})())}
 };
 

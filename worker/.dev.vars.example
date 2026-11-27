@@ -1,6 +1,5 @@
 MONGODB_URI=mongodb+srv://<least-privilege-user>:<password>@<cluster-host>/saharsa_news
 MONGODB_DB=saharsa_news
-SESSION_SECRET=replace-with-at-least-32-random-characters
 AUTOMATION_TOKEN=replace-with-a-long-random-token
 GEMINI_API_KEY=
 AI_MODEL=gemini-2.5-flash
