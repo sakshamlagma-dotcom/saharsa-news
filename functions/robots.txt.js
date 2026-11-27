@@ -1,0 +1,1 @@
+export async function onRequest({request}){const base=new URL(request.url).origin;return new Response(`User-agent: *\nAllow: /\nDisallow: /admin\nSitemap: ${base}/sitemap.xml\n`,{headers:{'content-type':'text/plain;charset=UTF-8'}})}

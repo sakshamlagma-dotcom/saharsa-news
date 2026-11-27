@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="hi">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#101a18"><title>Saharsa Newsroom</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+Devanagari:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/admin.css">
+</head>
+<body>
+<section id="auth-screen" class="auth-screen" hidden><form id="auth-form" class="auth-card"><div class="brand-mark">स</div><span class="eyebrow">SECURE NEWSROOM</span><h1 id="auth-title">संपादक लॉगिन</h1><p id="auth-copy">डैशबोर्ड खोलने के लिए साइन इन करें।</p><label>Email<input name="email" type="email" autocomplete="username" required placeholder="editor@example.com"></label><label>Password<input name="password" type="password" autocomplete="current-password" minlength="12" required placeholder="कम से कम 12 अक्षर"></label><button class="primary" id="auth-submit">लॉगिन</button><div id="auth-error" class="auth-error"></div></form></section>
+<aside class="sidebar">
+  <a class="brand" href="#"><span class="brand-mark">स</span><span><b>Saharsa</b><small>NEWSROOM</small></span></a>
+  <div class="workspace-label">न्यूज़रूम</div>
+  <nav><a class="nav-link active" href="#dashboard"><span>◫</span> डैशबोर्ड</a><a class="nav-link" href="#stories"><span>▤</span> सभी खबरें <i id="nav-count">0</i></a><a class="nav-link" href="#sources"><span>◎</span> न्यूज़ सोर्स</a><a class="nav-link" href="#settings"><span>⚙</span> सेटिंग्स</a></nav>
+  <div class="sidebar-bottom"><div class="live-dot"></div><span>सिस्टम सक्रिय</span><span class="version">MVP 0.1</span></div>
+</aside>
+<main class="main" id="dashboard">
+  <header class="topbar"><div class="crumb">न्यूज़रूम <span>/</span> <b>डैशबोर्ड</b></div><div class="top-actions"><span class="today" id="today"></span><span class="avatar">S</span></div></header>
+  <section class="intro"><div><div class="eyebrow"><span class="live-dot"></span> Saharsa District Desk</div><h1>नमस्ते, संपादक <span>👋</span></h1><p>आज की खबरों और पब्लिशिंग गतिविधि का हाल।</p></div><button class="primary" id="new-story"><span>＋</span> नई खबर</button></section>
+  <section class="stats">
+    <article class="stat-card"><div class="stat-top"><span>कुल खबरें</span><span class="stat-icon mint">▤</span></div><div class="stat-value" id="total">0</div><div class="stat-foot">न्यूज़रूम में दर्ज खबरें</div></article>
+    <article class="stat-card"><div class="stat-top"><span>समीक्षा बाकी</span><span class="stat-icon amber">◷</span></div><div class="stat-value" id="pending">0</div><div class="stat-foot">मानव सत्यापन की प्रतीक्षा</div></article>
+    <article class="stat-card"><div class="stat-top"><span>प्रकाशन के लिए तैयार</span><span class="stat-icon blue">↗</span></div><div class="stat-value" id="ready">0</div><div class="stat-foot">अभी बाहरी पब्लिशिंग बंद है</div></article>
+    <article class="stat-card"><div class="stat-top"><span>जुड़े हुए सोर्स</span><span class="stat-icon violet">⌁</span></div><div class="stat-value" id="source-count">0<span class="unit"> / 5</span></div><div class="stat-foot">RSS, AI और Meta integrations</div></article>
+  </section>
+  <section class="content-grid">
+    <article class="panel story-panel" id="stories"><div class="panel-head"><div><h2>न्यूज़रूम इनबॉक्स</h2><p>नई और समीक्षा की प्रतीक्षा कर रही खबरें</p></div><button class="text-button" id="refresh">↻ <span>रिफ्रेश</span></button></div><div class="filters"><button class="filter active" data-filter="all">सभी <b id="all-count">0</b></button><button class="filter" data-filter="review">समीक्षा बाकी <b id="review-count">0</b></button><button class="filter" data-filter="draft">ड्राफ्ट <b id="draft-count">0</b></button><button class="filter" data-filter="approved">स्वीकृत <b id="approved-count">0</b></button></div><div id="story-list" class="story-list"></div></article>
+    <aside class="right-column">
+<article class="panel source-panel" id="sources"><div class="panel-head"><div><h2>सोर्स कनेक्शन</h2><p>आपके न्यूज़ डेटा के स्रोत</p></div><span class="more">•••</span></div><div class="source-row"><span class="source-icon rss">◔</span><span class="source-info"><b>RSS Feeds</b><small>समाचार स्रोत</small></span><span class="status-pill" id="rss-status">जुड़ा नहीं</span></div><div class="source-row"><span class="source-icon ai">✳</span><span class="source-info"><b>Gemini AI</b><small>लेखन और वर्गीकरण</small></span><span class="status-pill off" id="ai-status">सेटअप बाकी</span></div><div class="source-row"><span class="source-icon fb">f</span><span class="source-info"><b>Meta Publishing</b><small>Facebook और Instagram</small></span><span class="status-pill off" id="meta-status">बंद</span></div><div class="source-row"><span class="source-icon cloud">▧</span><span class="source-info"><b>Cloudinary</b><small>Feature image storage</small></span><span class="status-pill off" id="cloud-status">सेटअप बाकी</span></div><button class="secondary full" id="ingest">अभी RSS जांचें <span>→</span></button><div id="source-list"></div><details class="source-add"><summary>＋ RSS source जोड़ें</summary><form id="source-form"><input name="name" required placeholder="सोर्स का नाम"><input name="url" type="url" required placeholder="https://example.com/rss.xml"><button class="mini-btn ok">सोर्स सेव करें</button></form></details></article>
+      <article class="panel automation-panel"><div class="panel-head"><div><h2>Automation Control</h2><p>RSS discovery और worker health</p></div><span class="status-pill off" id="automation-state">जांच रहे हैं</span></div><div class="automation-info" id="automation-info">Schedule: hourly Cron · Retry: GitHub Actions</div><button class="secondary full" id="automation-toggle">लोड हो रहा है…</button><div id="automation-jobs" class="automation-jobs"></div></article>
+      <article class="panel safety-panel"><div class="safety-heading"><span class="shield">✓</span><div><h2>सुरक्षा नियम सक्रिय</h2><p>प्रकाशन से पहले सत्यापन जरूरी</p></div></div><div class="safety-rule"><span class="rule-dot green"></span><span>आधिकारिक खबरें</span><b>समीक्षा</b></div><div class="safety-rule"><span class="rule-dot orange"></span><span>अपराध / दुर्घटना</span><b>अनुमति जरूरी</b></div><div class="safety-rule"><span class="rule-dot red"></span><span>राजनीतिक आरोप</span><b>अनुमति जरूरी</b></div><div class="safety-note">कोई भी खबर स्वतः वेबसाइट या सोशल मीडिया पर प्रकाशित नहीं होती।</div></article>
+      <article class="panel locations-panel"><div class="panel-head"><div><h2>जिला कवरेज</h2><p>सहरसा के मॉनिटर किए जाने वाले क्षेत्र</p></div><span class="location-count">10</span></div><div class="location-tags" id="locations"></div></article>
+    </aside>
+  </section>
+  <footer>SAHARSA NEWSROOM <span>•</span> स्थानीय खबर, जिम्मेदारी के साथ</footer>
+</main>
+<dialog id="story-dialog"><form method="dialog" id="story-form"><div class="dialog-head"><div><span class="eyebrow">न्यूज़रूम डेस्क</span><h2>नई खबर दर्ज करें</h2></div><button class="close" value="cancel" aria-label="बंद करें">×</button></div><label>हेडलाइन<input name="title" required maxlength="180" placeholder="खबर की हिंदी हेडलाइन"></label><label>खबर का विवरण<textarea name="body" required rows="5" placeholder="सत्यापित तथ्यों के आधार पर खबर लिखें..."></textarea></label><label>मूल स्रोत का लिंक <span class="optional">वैकल्पिक</span><input name="url" type="url" placeholder="https://..."></label><label>फीचर इमेज <span class="optional">Cloudinary Free quota</span><input name="image" type="file" accept="image/*"><input name="featuredImage" type="hidden"></label><div class="dialog-note">अपराध, दुर्घटना या राजनीतिक आरोप वाली खबर समीक्षा में जाएगी।</div><div class="dialog-actions"><button class="secondary" value="cancel">रद्द करें</button><button class="primary" id="save-story" value="default">ड्राफ्ट सेव करें</button></div></form></dialog>
+<dialog id="ai-dialog"><form method="dialog"><div class="dialog-head"><div><span class="eyebrow">AI DRAFT · HUMAN REVIEW REQUIRED</span><h2>AI हिंदी मसौदा</h2></div><button class="close" value="cancel" aria-label="बंद करें">×</button></div><label>हेडलाइन<input id="ai-title" readonly></label><label>सारांश<textarea id="ai-summary" rows="2" readonly></textarea></label><label>लेख<textarea id="ai-body" rows="8" readonly></textarea></label><div id="ai-facts" class="dialog-note"></div><div class="dialog-actions"><button class="secondary" value="cancel">बंद करें</button></div></form></dialog>
+<div id="toast" role="status"></div><script src="/app.js" defer></script>
+</body></html>
+
+
+
+

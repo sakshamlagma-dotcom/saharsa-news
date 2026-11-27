@@ -1,0 +1,7 @@
+name = "saharsa-news"
+pages_build_output_dir = "./public"
+compatibility_date = "2026-08-04"
+
+[[services]]
+binding = "API"
+service = "saharsa-news-api"
