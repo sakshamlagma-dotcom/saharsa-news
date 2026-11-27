@@ -18,7 +18,7 @@ Public Pages routes: `GET /`, `GET /article/:slug` (server-rendered NewsArticle 
 - `GET /api/dashboard` — newsroom counters and failed automation jobs.
 - `GET /api/articles?page=1&limit=25&status=NEW&category=सहरसा&location=Kahara` — paginated articles and total.
 - `POST /api/articles` — body `{ "title", "body", "category", "location", "sourceUrl?", "sourceName?", "featuredImage?" }`. Sensitive topics enter `NEEDS_VERIFICATION`.
-- `PATCH /api/articles/:id` — update `title`, `body`, `summary`, `seoTitle`, `seoDescription`, `category`, `location`.
+- `PATCH /api/articles/:id` — update `title`, `body`, `summary`, `seoTitle`, `seoDescription`, `category`, `location`, or `featuredImage`. Use an empty image value to remove it; image URLs must be public HTTP(S) URLs.
 - `POST /api/articles/:id/status` — body `{ "status": "VERIFIED|APPROVED|PUBLISHED|REJECTED" }`. Publishing requires prior approval; sensitive stories are blocked from the basic approval path.
 - `DELETE /api/articles/:id` — editor/admin action.
 
@@ -33,7 +33,7 @@ Public Pages routes: `GET /`, `GET /article/:slug` (server-rendered NewsArticle 
 - `PATCH /api/automation/control` — admin body `{ "enabled": true|false }` to pause/resume discovery.
 - `GET /api/automation/jobs/:id` — editorial/admin job details.
 - `POST /api/ai/draft/:id` — editor-triggered Gemini original-draft generation. Result is stored as `NEEDS_EDITOR_REVIEW`; this does not verify or publish the article.
-- `POST /api/media/sign` — editor-only short-lived Cloudinary upload signature. Client uploads the selected image directly to Cloudinary; API secret stays server-side.
+- `POST /api/media/sign` — editor-only short-lived Cloudinary upload signature. Client uploads the selected image directly to Cloudinary; API secret stays server-side. Cloudinary is optional; editors can also enter a public image URL manually.
 
 ## Audit
 

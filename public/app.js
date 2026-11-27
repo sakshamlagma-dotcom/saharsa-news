@@ -33,6 +33,72 @@ function safeExternalUrl(value) {
   } catch { return ''; }
 }
 
+function safeImageUrl(value) {
+  try {
+    const url = new URL(String(value || '').trim());
+    const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase().replace(/\.$/, '');
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password ||
+      hostname === 'localhost' || hostname.endsWith('.localhost') ||
+      hostname.endsWith('.local') || hostname.endsWith('.internal') ||
+      hostname.includes(':') || /^\d+(?:\.\d+){0,3}$/.test(hostname)) return '';
+    return url.href;
+  } catch {
+    return '';
+  }
+}
+
+function updateImagePreview(urlInput, fileInput, preview) {
+  if (!preview) return;
+  const previousObjectUrl = preview.dataset.objectUrl;
+  if (previousObjectUrl) URL.revokeObjectURL(previousObjectUrl);
+  delete preview.dataset.objectUrl;
+
+  const file = fileInput?.files?.[0];
+  if (file && (!file.type.startsWith('image/') || file.size > 8 * 1024 * 1024)) {
+    preview.replaceChildren();
+    preview.hidden = true;
+    return;
+  }
+  const source = file ? URL.createObjectURL(file) : safeImageUrl(urlInput?.value);
+  if (!source) {
+    preview.replaceChildren();
+    preview.hidden = true;
+    return;
+  }
+  if (file) preview.dataset.objectUrl = source;
+  const image = new Image();
+  image.alt = 'फीचर इमेज प्रिव्यू';
+  image.addEventListener('error', () => {
+    const objectUrl = preview.dataset.objectUrl;
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+    delete preview.dataset.objectUrl;
+    const message = document.createElement('p');
+    message.textContent = 'इस इमेज का प्रिव्यू लोड नहीं हो सका।';
+    preview.replaceChildren(message);
+  }, { once: true });
+  image.src = source;
+  preview.replaceChildren(image);
+  preview.hidden = false;
+}
+
+async function uploadImageToCloudinary(file) {
+  const signedResponse = await fetch('/api/media/sign', { method: 'POST' });
+  const signature = await signedResponse.json();
+  if (!signedResponse.ok) throw new Error(signature.error || 'Cloudinary upload अभी उपलब्ध नहीं है।');
+  const uploadData = new FormData();
+  uploadData.set('file', file);
+  uploadData.set('api_key', signature.apiKey);
+  uploadData.set('timestamp', signature.timestamp);
+  uploadData.set('folder', signature.folder);
+  uploadData.set('signature', signature.signature);
+  const response = await fetch(`https://api.cloudinary.com/v1_1/${signature.cloudName}/image/upload`, { method: 'POST', body: uploadData });
+  const asset = await response.json();
+  if (!response.ok) throw new Error(asset.error?.message || 'Cloudinary upload विफल हुआ।');
+  const imageUrl = safeImageUrl(asset.secure_url);
+  if (!imageUrl) throw new Error('Cloudinary ने मान्य HTTPS इमेज URL नहीं लौटाया।');
+  return imageUrl;
+}
+
 function formatDate(value) {
   if (!value) return 'अभी तक नहीं';
   const date = new Date(value);
@@ -181,6 +247,26 @@ function beginSourceEdit(source) {
   $('#source-editor').scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
+const newStoryForm = $('#story-form');
+const editStoryForm = $('#edit-story-form');
+if (newStoryForm) {
+  const urlInput = newStoryForm.elements.featuredImage;
+  const fileInput = newStoryForm.elements.image;
+  urlInput.addEventListener('input', () => updateImagePreview(urlInput, fileInput, $('#new-image-preview')));
+  fileInput.addEventListener('change', () => updateImagePreview(urlInput, fileInput, $('#new-image-preview')));
+}
+if (editStoryForm) {
+  const urlInput = editStoryForm.elements.featuredImage;
+  const fileInput = editStoryForm.elements.image;
+  urlInput.addEventListener('input', () => updateImagePreview(urlInput, fileInput, $('#edit-image-preview')));
+  fileInput.addEventListener('change', () => updateImagePreview(urlInput, fileInput, $('#edit-image-preview')));
+  $('#clear-edit-image').addEventListener('click', () => {
+    urlInput.value = '';
+    fileInput.value = '';
+    updateImagePreview(urlInput, fileInput, $('#edit-image-preview'));
+  });
+}
+
 $('#today').textContent = new Date().toLocaleDateString('hi-IN', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
 document.querySelectorAll('.filter').forEach(button => button.addEventListener('click', () => {
   document.querySelector('.filter.active')?.classList.remove('active');
@@ -230,22 +316,14 @@ $('#story-form').addEventListener('submit', async event => {
   const raw = new FormData(event.currentTarget);
   const form = Object.fromEntries(raw);
   const file = raw.get('image');
+  let featuredImage = safeImageUrl(form.featuredImage);
+  if (form.featuredImage && !featuredImage) { toast('फीचर इमेज के लिए सुरक्षित HTTP(S) URL दें।'); return; }
   if (file?.size) {
     if (!file.type.startsWith('image/') || file.size > 8 * 1024 * 1024) { toast('8 MB तक की image चुनें।'); return; }
-    const signed = await fetch('/api/media/sign', { method: 'POST' });
-    const signature = await signed.json();
-    if (!signed.ok) { toast(signature.error || 'Image upload setup नहीं है'); return; }
-    const uploadData = new FormData();
-    uploadData.set('file', file);
-    uploadData.set('api_key', signature.apiKey);
-    uploadData.set('timestamp', signature.timestamp);
-    uploadData.set('folder', signature.folder);
-    uploadData.set('signature', signature.signature);
-    const upload = await fetch(`https://api.cloudinary.com/v1_1/${signature.cloudName}/image/upload`, { method: 'POST', body: uploadData });
-    const asset = await upload.json();
-    if (!upload.ok) { toast('Cloudinary upload विफल हुआ।'); return; }
-    form.featuredImage = asset.secure_url;
+    try { featuredImage = await uploadImageToCloudinary(file); }
+    catch (error) { toast(error.message || 'Cloudinary upload विफल हुआ।'); return; }
   }
+  form.featuredImage = featuredImage;
   delete form.image;
   form.sourceUrl = form.url;
   delete form.url;
@@ -270,6 +348,9 @@ $('#story-list').addEventListener('click', async event => {
     form.elements.title.value = story.title;
     form.elements.summary.value = story.summary || '';
     $('#edit-story-category').value = story.category;
+    form.elements.featuredImage.value = safeImageUrl(story.featuredImage);
+    form.elements.image.value = '';
+    updateImagePreview(form.elements.featuredImage, form.elements.image, $('#edit-image-preview'));
     $('#edit-story-dialog').showModal();
     return;
   }
@@ -305,7 +386,24 @@ $('#story-list').addEventListener('click', async event => {
 $('#edit-story-form').addEventListener('submit', async event => {
   event.preventDefault();
   const form = event.currentTarget;
-  const response = await fetch(`/api/articles/${form.dataset.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: form.elements.title.value, summary: form.elements.summary.value, category: form.elements.category.value }) });
+  const file = form.elements.image.files[0];
+  let featuredImage = safeImageUrl(form.elements.featuredImage.value);
+  if (form.elements.featuredImage.value && !featuredImage) { toast('फीचर इमेज के लिए सुरक्षित HTTP(S) URL दें।'); return; }
+  if (file?.size) {
+    if (!file.type.startsWith('image/') || file.size > 8 * 1024 * 1024) { toast('8 MB तक की image चुनें।'); return; }
+    try { featuredImage = await uploadImageToCloudinary(file); }
+    catch (error) { toast(error.message || 'Cloudinary upload विफल हुआ।'); return; }
+  }
+  const response = await fetch(`/api/articles/${form.dataset.id}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      title: form.elements.title.value,
+      summary: form.elements.summary.value,
+      category: form.elements.category.value,
+      featuredImage
+    })
+  });
   const data = await response.json();
   if (!response.ok) { toast(data.error || 'खबर संपादित नहीं हुई'); return; }
   $('#edit-story-dialog').close();

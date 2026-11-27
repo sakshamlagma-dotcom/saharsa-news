@@ -58,10 +58,13 @@ try {
   const setup = await request('/api/auth/setup', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'admin@example.test', password: 'strong-test-password-123' }) });
   assert.equal(setup.status, 201);
 
-  const created = await request('/api/articles', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: 'सहरसा में स्कूलों की नई पहल', body: 'सहरसा जिले के स्कूलों में आज एक नई शैक्षणिक पहल शुरू की गई है। अधिकारियों ने कार्यक्रम की जानकारी साझा की।', category: 'शिक्षा', location: 'Saharsa City' }) });
+  const created = await request('/api/articles', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: 'सहरसा में स्कूलों की नई पहल', body: 'सहरसा जिले के स्कूलों में आज एक नई शैक्षणिक पहल शुरू की गई है। अधिकारियों ने कार्यक्रम की जानकारी साझा की।', category: 'शिक्षा', location: 'Saharsa City', featuredImage: 'https://images.example.test/manual.jpg' }) });
   assert.equal(created.status, 201);
   const article = await created.json();
   assert.equal(article.status, 'NEW');
+  assert.equal(article.featuredImage, 'https://images.example.test/manual.jpg');
+  const invalidImage = await request('/api/articles', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: 'सहरसा में स्कूलों की दूसरी पहल', body: 'सहरसा जिले के स्कूलों में कार्यक्रम का सत्यापित विवरण साझा किया गया है।', category: 'शिक्षा', location: 'Saharsa City', featuredImage: 'javascript:alert(1)' }) });
+  assert.equal(invalidImage.status, 400, 'unsafe image URLs are rejected');
 
   const sensitive = await request('/api/articles', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: 'सहरसा में दुर्घटना की खबर', body: 'स्थानीय रिपोर्ट में दुर्घटना में लोगों के घायल होने की बात कही गई है। पुष्टि जारी है।', category: 'अपराध', location: 'Saharsa City' }) });
   assert.equal(sensitive.status, 201);
@@ -87,12 +90,19 @@ try {
   assert.match(await sitemap.text(), /<urlset/);
   const articlePage = await fetch(base + `/article/${article.slug}`);
   assert.equal(articlePage.status, 200);
-  assert.match(await articlePage.text(), /NewsArticle/);
+  const articleHtml = await articlePage.text();
+  assert.match(articleHtml, /NewsArticle/);
+  assert.match(articleHtml, /https:\/\/images\.example\.test\/manual\.jpg/);
+  assert.match(articleHtml, /class="image-fallback" hidden/);
 
   const list = await request('/api/articles');
   assert.equal((await list.json()).total, 2);
-  const edit = await request(`/api/articles/${article.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ summary: 'संपादित सारांश' }) });
-  assert.equal((await edit.json()).summary, 'संपादित सारांश');
+  const edit = await request(`/api/articles/${article.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ summary: 'संपादित सारांश', featuredImage: 'https://images.example.test/edited.jpg' }) });
+  const editedArticle = await edit.json();
+  assert.equal(editedArticle.summary, 'संपादित सारांश');
+  assert.equal(editedArticle.featuredImage, 'https://images.example.test/edited.jpg');
+  const removeImage = await request(`/api/articles/${article.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ featuredImage: '' }) });
+  assert.equal((await removeImage.json()).featuredImage, '', 'an editor can remove a wrong image');
   const sources = await request('/api/sources', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Test RSS', url: 'https://feeds.example.test/feed.xml', category: 'शिक्षा', region: 'Saharsa City', enabled: true }) });
   assert.equal(sources.status, 201);
   const source = await sources.json();

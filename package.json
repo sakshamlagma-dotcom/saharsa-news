@@ -6,8 +6,8 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "check": "node --check server.js && node --check rss.js && node --check public/app.js && node --check public/portal.js && node --check scripts/migrate-sqlite-to-mongo.js && node --check scripts/check-mongodb.js && node --check tests/integration.mjs && node --check tests/rss.mjs && node --check tests/memory-mongo.js",
-    "test": "node tests/integration.mjs && node tests/rss.mjs",
+    "check": "node --check server.js && node --check rss.js && node --check public/app.js && node --check public/portal.js && node --check public/article.js && node --check \"functions/article/[slug].js\" && node --check scripts/migrate-sqlite-to-mongo.js && node --check scripts/check-mongodb.js && node --check tests/integration.mjs && node --check tests/rss.mjs && node --check tests/images.mjs && node --check tests/memory-mongo.js",
+    "test": "node tests/integration.mjs && node tests/rss.mjs && node tests/images.mjs",
     "check:mongodb": "node scripts/check-mongodb.js",
     "migrate:sqlite": "node scripts/migrate-sqlite-to-mongo.js"
   },

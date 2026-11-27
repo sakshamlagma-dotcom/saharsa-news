@@ -8,7 +8,7 @@ import { MongoClient } from 'mongodb';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { canonicalizeArticleUrl, feedErrorMessage, fetchRssFeed, normalizeTitle, validateFeedUrl } from './rss.js';
+import { canonicalizeArticleUrl, feedErrorMessage, fetchRssFeed, normalizeTitle, safeImageUrl, validateFeedUrl } from './rss.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const locations = ['Saharsa City', 'Simri Bakhtiyarpur', 'Sonbarsa Raj', 'Saur Bazar', 'Mahishi', 'Nauhatta', 'Patarghat', 'Salkhua', 'Banma Itahri', 'Kahara'];
@@ -24,6 +24,7 @@ function articleRow(row) {
     id: row.id, title: row.title, slug: row.slug, body: row.body, summary: row.summary || '',
     seoTitle: row.seo_title || '', seoDescription: row.seo_description || '', sourceUrl: row.source_url || '',
     sourceName: row.source_name || '', category: row.category, location: row.location, status: row.status,
+    featuredImage: row.featured_image || row.featuredImage || '',
     region: row.rss_region || row.location, sourcePublishedAt: row.source_published_at || null, discoveredAt: row.discovered_at || null,
     verified: Boolean(row.verified), authorId: row.author_id || null, createdAt: row.created_at,
     updatedAt: row.updated_at, publishedAt: row.published_at || null
@@ -109,6 +110,7 @@ async function ingestOneSource({ source, sources, articles, fetchFeed }) {
         id: randomUUID(), title, slug: slugifyHindi(title), body: String(item.body || '').slice(0, 4000),
         summary: String(item.body || '').slice(0, 1200), seo_title: '', seo_description: '',
         source_url: canonicalUrl, source_name: source.name, category: source.category || 'सहरसा', location,
+        featured_image: safeImageUrl(item.featuredImage, canonicalUrl) || '',
         rss_region: source.region || location, rss_source_id: source.id || null, canonical_url: canonicalUrl, rss_title_key: titleKey,
         source_published_at: item.publishedAt || null, discovered_at: timestamp,
         status: 'PENDING_REVIEW', verified: 0, author_id: null, created_at: timestamp, updated_at: timestamp, published_at: null
@@ -311,6 +313,7 @@ export function createApp({ db, env = process.env, rssFetcher = fetchRssFeed } =
     const row = {
       id, title: fields.title, slug: slugifyHindi(fields.title), body: fields.body, summary: '', seo_title: '', seo_description: '',
       source_url: fields.sourceUrl || '', source_name: fields.sourceName || '', category: fields.category, location: fields.location,
+      featured_image: fields.featuredImage || '',
       status: fields.status, verified: 0, author_id: req.session.user?.id || null, created_at: timestamp, updated_at: timestamp, published_at: null
     };
     await articles.insertOne(row);
@@ -413,17 +416,29 @@ export function createApp({ db, env = process.env, rssFetcher = fetchRssFeed } =
     if (title.length < 5 || !body || body.length < 20) return res.status(400).json({ error: 'शीर्षक (कम से कम 5 अक्षर) और विवरण (कम से कम 20 अक्षर) आवश्यक हैं।' });
     if (!categories.includes(category) || !locations.includes(location)) return res.status(400).json({ error: 'अमान्य category या location।' });
     const status = sensitive.test(`${title} ${body}`) ? 'NEEDS_VERIFICATION' : 'NEW';
-    const article = await createArticle(req, { title, body, sourceUrl: String(req.body?.sourceUrl || ''), sourceName: String(req.body?.sourceName || 'स्थानीय डेस्क'), category, location, status });
+    const imageValue = String(req.body?.featuredImage || '').trim();
+    const featuredImage = safeImageUrl(imageValue);
+    if (imageValue && !featuredImage) return res.status(400).json({ error: 'फीचर इमेज के लिए सार्वजनिक HTTP(S) URL आवश्यक है।' });
+    const article = await createArticle(req, { title, body, sourceUrl: String(req.body?.sourceUrl || ''), sourceName: String(req.body?.sourceName || 'स्थानीय डेस्क'), featuredImage, category, location, status });
     await addAudit(req, 'article_created', 'article', article.id, { status });
     res.status(201).json(article);
   });
   app.patch('/api/articles/:id', requireRole('SUPER_ADMIN', 'ADMIN', 'EDITOR'), async (req, res) => {
     const row = await articles.findOne({ id: req.params.id });
     if (!row) return res.sendStatus(404);
-    const allowed = ['title', 'body', 'summary', 'seoTitle', 'seoDescription', 'category', 'location'];
-    const fields = { title: 'title', body: 'body', summary: 'summary', seoTitle: 'seo_title', seoDescription: 'seo_description', category: 'category', location: 'location' };
+    const allowed = ['title', 'body', 'summary', 'seoTitle', 'seoDescription', 'category', 'location', 'featuredImage'];
+    const fields = { title: 'title', body: 'body', summary: 'summary', seoTitle: 'seo_title', seoDescription: 'seo_description', category: 'category', location: 'location', featuredImage: 'featured_image' };
     const updates = {};
-    for (const key of allowed) if (req.body?.[key] !== undefined) updates[fields[key]] = key === 'title' || key === 'body' ? text(req.body[key]) : String(req.body[key]);
+    for (const key of allowed) {
+      if (req.body?.[key] === undefined) continue;
+      if (key === 'featuredImage') {
+        const value = String(req.body[key] || '').trim();
+        if (value && !safeImageUrl(value)) return res.status(400).json({ error: 'फीचर इमेज के लिए सार्वजनिक HTTP(S) URL आवश्यक है।' });
+        updates[fields[key]] = value ? safeImageUrl(value) : '';
+      } else {
+        updates[fields[key]] = key === 'title' || key === 'body' ? text(req.body[key]) : String(req.body[key]);
+      }
+    }
     if ((updates.category && !categories.includes(updates.category)) || (updates.location && !locations.includes(updates.location))) return res.status(400).json({ error: 'अमान्य category या location।' });
     if (!Object.keys(updates).length) return res.status(400).json({ error: 'अपडेट करने के लिए कोई मान्य field नहीं मिला।' });
     updates.updated_at = now();
@@ -609,8 +624,10 @@ export function createApp({ db, env = process.env, rssFetcher = fetchRssFeed } =
     const description = article.seoDescription || article.summary || article.body.slice(0, 155);
     const origin = env.PUBLIC_URL || `${req.protocol}://${req.get('host')}`;
     const url = `${origin}/article/${encodeURIComponent(article.slug)}`;
-    const schemaJson = JSON.stringify({ '@context': 'https://schema.org', '@type': 'NewsArticle', headline: article.title, description, datePublished: article.publishedAt, dateModified: article.updatedAt, author: { '@type': 'Organization', name: env.SITE_NAME || 'Saharsa News' }, publisher: { '@type': 'Organization', name: env.SITE_NAME || 'Saharsa News' }, mainEntityOfPage: url }).replace(/</g, '\\u003c');
-    res.type('html').send(`<!doctype html><html lang="hi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(article.seoTitle || article.title)} | Saharsa News</title><meta name="description" content="${escapeHtml(description)}"><link rel="canonical" href="${escapeHtml(url)}"><meta property="og:type" content="article"><meta property="og:title" content="${escapeHtml(article.title)}"><meta property="og:description" content="${escapeHtml(description)}"><meta property="og:url" content="${escapeHtml(url)}"><meta name="twitter:card" content="summary"><script type="application/ld+json">${schemaJson}</script><link rel="stylesheet" href="/portal.css"></head><body><header><a class="logo" href="/">सहरसा <b>NEWS</b></a><nav><a href="/">होम</a><a href="/#latest">ताज़ा खबरें</a><a href="/admin">न्यूज़रूम</a></nav></header><main class="article"><a class="back" href="/">← मुख्य पृष्ठ</a><div class="crumb">होम / ${escapeHtml(article.category)} / ${escapeHtml(article.location)}</div><span class="tag">${escapeHtml(article.category)} · ${escapeHtml(article.location)}</span><h1>${escapeHtml(article.title)}</h1><p class="summary">${escapeHtml(description)}</p><div class="byline">Saharsa News Desk · ${new Date(article.publishedAt).toLocaleDateString('hi-IN', { dateStyle: 'long' })} · ${escapeHtml(article.sourceName || 'स्रोत विवरण')}</div><div class="body">${escapeHtml(article.body).split(/\n+/).map(paragraph => `<p>${paragraph}</p>`).join('')}</div><div class="source">मूल स्रोत: ${article.sourceUrl ? `<a href="${escapeHtml(article.sourceUrl)}" rel="nofollow noopener">${escapeHtml(article.sourceName || new URL(article.sourceUrl).hostname)}</a>` : escapeHtml(article.sourceName || 'स्थानीय डेस्क')}</div></main><footer>सहरसा की हर खबर, सबसे पहले।</footer></body></html>`);
+    const schemaJson = JSON.stringify({ '@context': 'https://schema.org', '@type': 'NewsArticle', headline: article.title, description, image: article.featuredImage ? [article.featuredImage] : undefined, datePublished: article.publishedAt, dateModified: article.updatedAt, author: { '@type': 'Organization', name: env.SITE_NAME || 'Saharsa News' }, publisher: { '@type': 'Organization', name: env.SITE_NAME || 'Saharsa News' }, mainEntityOfPage: url }).replace(/</g, '\\u003c');
+    const imageMeta = article.featuredImage ? `<meta property="og:image" content="${escapeHtml(article.featuredImage)}"><meta name="twitter:image" content="${escapeHtml(article.featuredImage)}">` : '';
+    const image = article.featuredImage ? `<div class="article-image-wrap"><img class="article-image" data-src="${escapeHtml(article.featuredImage)}" alt="${escapeHtml(article.title)}" loading="eager"><div class="image-fallback" hidden>सहरसा <b>NEWS</b></div></div>` : '';
+    res.type('html').send(`<!doctype html><html lang="hi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(article.seoTitle || article.title)} | Saharsa News</title><meta name="description" content="${escapeHtml(description)}"><link rel="canonical" href="${escapeHtml(url)}"><meta property="og:type" content="article"><meta property="og:title" content="${escapeHtml(article.title)}"><meta property="og:description" content="${escapeHtml(description)}"><meta property="og:url" content="${escapeHtml(url)}">${imageMeta}<meta name="twitter:card" content="${article.featuredImage ? 'summary_large_image' : 'summary'}"><script type="application/ld+json">${schemaJson}</script><link rel="stylesheet" href="/portal.css"><script src="/article.js" defer></script></head><body><header><a class="logo" href="/">सहरसा <b>NEWS</b></a><nav><a href="/">होम</a><a href="/#latest">ताज़ा खबरें</a><a href="/admin">न्यूज़रूम</a></nav></header><main class="article"><a class="back" href="/">← मुख्य पृष्ठ</a><div class="crumb">होम / ${escapeHtml(article.category)} / ${escapeHtml(article.location)}</div><span class="tag">${escapeHtml(article.category)} · ${escapeHtml(article.location)}</span><h1>${escapeHtml(article.title)}</h1><p class="summary">${escapeHtml(description)}</p>${image}<div class="byline">Saharsa News Desk · ${new Date(article.publishedAt).toLocaleDateString('hi-IN', { dateStyle: 'long' })} · ${escapeHtml(article.sourceName || 'स्रोत विवरण')}</div><div class="body">${escapeHtml(article.body).split(/\n+/).map(paragraph => `<p>${paragraph}</p>`).join('')}</div><div class="source">मूल स्रोत: ${article.sourceUrl ? `<a href="${escapeHtml(article.sourceUrl)}" rel="nofollow noopener">${escapeHtml(article.sourceName || new URL(article.sourceUrl).hostname)}</a>` : escapeHtml(article.sourceName || 'स्थानीय डेस्क')}</div></main><footer>सहरसा की हर खबर, सबसे पहले।</footer></body></html>`);
   });
   app.get('/feed.xml', async (_req, res) => {
     const rows = await articles.find({ status: 'PUBLISHED' }).sort({ published_at: -1 }).limit(50).toArray();

@@ -40,6 +40,18 @@ export function canonicalizeArticleUrl(value, baseUrl) {
   return url.toString();
 }
 
+export function safeImageUrl(value, baseUrl) {
+  let url;
+  try { url = new URL(String(value || '').trim(), baseUrl); } catch { return ''; }
+  const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase().replace(/\.$/, '');
+  const family = isIP(hostname);
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || !hostname) return '';
+  if (family && !isPublicIp(hostname)) return '';
+  if (!family && (hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local') || hostname.endsWith('.internal'))) return '';
+  url.hash = '';
+  return url.toString();
+}
+
 export function isPublicIp(address) {
   const family = isIP(String(address || ''));
   if (family === 4) {
@@ -138,6 +150,59 @@ function itemLink(block) {
   return decodeXml(href || '');
 }
 
+function tagAttribute(attributes, name) {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return attributes.match(new RegExp(`\\b${escaped}\\s*=\\s*(["'])(.*?)\\1`, 'i'))?.[2] || '';
+}
+
+function imageFromHtml(value, baseUrl) {
+  const html = decodeXml(value);
+  for (const match of html.matchAll(/<img\b([^>]*)>/gi)) {
+    const url = tagAttribute(match[1], 'src');
+    const safeUrl = safeImageUrl(url, baseUrl);
+    if (safeUrl) return safeUrl;
+  }
+  return '';
+}
+
+function extractFeedImage(block, baseUrl) {
+  const candidates = [];
+  for (const match of block.matchAll(/<([A-Za-z_][\w.-]*:)?(content|thumbnail)\b([^>]*)\/?\s*>/gi)) {
+    const type = tagAttribute(match[3], 'type');
+    const medium = tagAttribute(match[3], 'medium').toLowerCase();
+    if (match[2].toLowerCase() === 'content' && ((type && !/^image\//i.test(type)) || (medium && medium !== 'image'))) continue;
+    const url = tagAttribute(match[3], 'url') || tagAttribute(match[3], 'href');
+    if (url) candidates.push(url);
+  }
+  for (const match of block.matchAll(/<enclosure\b([^>]*)\/?\s*>/gi)) {
+    if (/^image\//i.test(tagAttribute(match[1], 'type'))) {
+      const url = tagAttribute(match[1], 'url');
+      if (url) candidates.push(url);
+    }
+  }
+  for (const match of block.matchAll(/<link\b([^>]*)\/?\s*>/gi)) {
+    const type = tagAttribute(match[1], 'type');
+    const rel = tagAttribute(match[1], 'rel').toLowerCase();
+    if (/^image\//i.test(type) || rel === 'image' || (rel === 'enclosure' && /^image\//i.test(type))) {
+      const url = tagAttribute(match[1], 'href');
+      if (url) candidates.push(url);
+    }
+  }
+  for (const candidate of candidates) {
+    const url = safeImageUrl(decodeXml(candidate), baseUrl);
+    if (url) return url;
+  }
+
+  for (const name of ['description', 'encoded', 'summary', 'content']) {
+    const expression = new RegExp(`<(?:(?:[A-Za-z_][\\w.-]*):)?${name}\\b[^>]*>([\\s\\S]*?)<\\/(?:(?:[A-Za-z_][\\w.-]*):)?${name}\\s*>`, 'gi');
+    for (const match of block.matchAll(expression)) {
+      const url = imageFromHtml(match[1], baseUrl);
+      if (url) return url;
+    }
+  }
+  return '';
+}
+
 export function parseRssFeed(xml) {
   if (typeof xml !== 'string' || Buffer.byteLength(xml, 'utf8') > MAX_FEED_BYTES) throw new RssFeedError('INVALID_FEED', 'Feed document is empty or too large.');
   if (/<!DOCTYPE|<!ENTITY/i.test(xml)) throw new RssFeedError('INVALID_FEED', 'Feed document contains unsupported XML declarations.');
@@ -149,10 +214,11 @@ export function parseRssFeed(xml) {
     const title = plainText(elementContent(block, ['title'])).slice(0, 300);
     const body = plainText(elementContent(block, ['description', 'summary', 'encoded', 'content'])).slice(0, 4000);
     const link = itemLink(block);
+    const featuredImage = extractFeedImage(block, link);
     const publishedText = plainText(elementContent(block, ['pubdate', 'published', 'updated', 'date']));
     const publishedDate = publishedText ? new Date(publishedText) : null;
     if (!title) continue;
-    items.push({ title, body, link, publishedAt: publishedDate && Number.isFinite(publishedDate.getTime()) ? publishedDate.toISOString() : null });
+    items.push({ title, body, link, featuredImage, publishedAt: publishedDate && Number.isFinite(publishedDate.getTime()) ? publishedDate.toISOString() : null });
     if (items.length >= MAX_ITEMS) break;
   }
   const title = plainText(elementContent(xml, ['title'])).slice(0, 300);
