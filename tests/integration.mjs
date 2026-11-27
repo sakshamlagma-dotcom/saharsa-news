@@ -1,6 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import assert from 'node:assert/strict';
-import { createApp, validateStartupEnvironment } from '../server.js';
+import { createApp, safeMongoFailureDetails, validateStartupEnvironment } from '../server.js';
 import { MemoryDatabase } from './memory-mongo.js';
 
 const startupLogs = [];
@@ -11,6 +11,13 @@ assert.equal(startupLogs.join('\n').includes('test-only-secret'), false, 'startu
 assert.throws(() => validateStartupEnvironment({ NODE_ENV: 'production', MONGODB_URI: 'mongodb+srv://example.invalid/saharsa_news' }, line => startupLogs.push(line)), error => error.code === 'INVALID_SESSION_SECRET');
 assert.equal(startupLogs.join('\n').includes('mongodb+srv://'), false, 'startup diagnostics must not include connection strings');
 assert.equal(validateStartupEnvironment({ NODE_ENV: 'test', MONGODB_URI: 'mongodb://localhost/saharsa_news', PORT: '10000' }, line => startupLogs.push(line)).port, 10000);
+const authFailure = safeMongoFailureDetails({ name: 'MongoServerError', code: 8000, codeName: 'AtlasError', message: 'bad auth: authentication failed; secret=not-for-logs' });
+assert.equal(authFailure.failureCategory, 'authentication_failed');
+assert.equal(authFailure.errorCode, 8000);
+assert.equal(authFailure.errorCodeName, 'AtlasError');
+assert.equal(JSON.stringify(authFailure).includes('not-for-logs'), false, 'Mongo diagnostics must not include raw server messages');
+assert.equal(safeMongoFailureDetails({ name: 'MongoServerError', message: 'IP address 192.0.2.4 is not allowed to access this cluster' }).failureCategory, 'atlas_network_access_denied');
+assert.equal(safeMongoFailureDetails({ name: 'MongoServerSelectionError', cause: { name: 'MongoNetworkError' } }).failureCategory, 'network_or_server_selection_failed');
 
 const db = new MemoryDatabase();
 const app = createApp({ db, env: { ...process.env, NODE_ENV: 'test', SESSION_SECRET: 'integration-test-session-secret-0123456789' } });

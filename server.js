@@ -53,6 +53,27 @@ function safeDriverCode(value) {
   return typeof value === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(value) ? value : undefined;
 }
 
+export function safeMongoFailureDetails(error) {
+  const rawDetails = [error?.message, error?.errmsg, error?.cause?.message]
+    .filter(value => typeof value === 'string')
+    .join(' ');
+  let failureCategory = 'mongo_server_rejection';
+  if (/bad auth|authentication failed|sasl.*(?:fail|error)/i.test(rawDetails)) {
+    failureCategory = 'authentication_failed';
+  } else if (/ip address.{0,80}(?:not allowed|not in|not on)|(?:not allowed|not in|not on).{0,80}ip access list/i.test(rawDetails)) {
+    failureCategory = 'atlas_network_access_denied';
+  } else if (/MongoServerSelectionError|MongoNetworkError/.test(`${error?.name || ''} ${error?.cause?.name || ''}`)) {
+    failureCategory = 'network_or_server_selection_failed';
+  }
+
+  return {
+    errorType: typeof error?.name === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(error.name) ? error.name : 'MongoError',
+    errorCode: safeDriverCode(error?.code),
+    errorCodeName: safeDriverCode(error?.codeName),
+    failureCategory
+  };
+}
+
 export function validateStartupEnvironment(env = process.env, log = message => console.info(message)) {
   const uri = typeof env.MONGODB_URI === 'string' ? env.MONGODB_URI : '';
   const uriConfigured = Boolean(uri.trim());
@@ -408,8 +429,7 @@ export async function connectDatabase(env = process.env, { validated = false } =
     await client?.close().catch(() => {});
     console.error(JSON.stringify({
       event: 'mongodb_startup_failed',
-      errorType: typeof error?.name === 'string' ? error.name : 'MongoError',
-      errorCode: safeDriverCode(error?.code),
+      ...safeMongoFailureDetails(error),
       causeType: typeof error?.cause?.name === 'string' ? error.cause.name : undefined,
       causeCode: safeDriverCode(error?.cause?.code)
     }));
