@@ -28,6 +28,17 @@ Add these under **Render Dashboard → service → Environment** before deployin
 | `MONGODB_URI` | Atlas connection URI (mark as secret; never put it in Git) |
 | `MONGODB_DB` | `saharsa_news` (optional; this is the code default) |
 | `SESSION_SECRET` | A unique random value of at least 32 characters (keep it in Render only) |
+| `AUTOMATION_TOKEN` | Same random token as the GitHub Actions repository secret; store only in Render and GitHub Secrets |
+
+`AUTOMATION_TOKEN` authenticates `POST /api/automation/discover`. If the same token is already configured as a GitHub repository secret, copy it directly into Render's Environment page without placing it in source code, a workflow file, or chat. Render restarts after saving environment changes.
+
+## RSS discovery schedule
+
+GitHub Actions is the single hourly scheduler (`.github/workflows/discover.yml`). It calls the Render API with the `AUTOMATION_TOKEN` secret. The Cloudflare Worker Cron trigger is disabled so it cannot run a second discovery job into its separate collections. Do not create a Render Cron Job or enable a Cloudflare Cron for RSS discovery.
+
+The workflow runs at minute 23 each hour and can also be started from **GitHub → Actions → Scheduled news discovery → Run workflow**. Its requests are serialized by GitHub Actions concurrency and a MongoDB lease lock. The SUPER_ADMIN automation control pauses the API job without changing the workflow schedule.
+
+No third-party feeds are preloaded or assumed to work. A SUPER_ADMIN must add a real RSS/Atom URL; an active source is fetched and parsed before it is saved. Only the feed's excerpt, title, link, publication timestamp, and source attribution are stored. Discovered stories stay `PENDING_REVIEW` until a human verifies and approves them.
 
 The first successful service startup creates indexes only in the `render_*` collections. It does not drop collections or overwrite existing records. Authentication and article/session records are stored in those namespaced collections, separately from the Cloudflare Worker collections.
 

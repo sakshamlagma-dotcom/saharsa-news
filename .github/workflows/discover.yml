@@ -1,7 +1,7 @@
 name: Scheduled news discovery
 on:
   schedule:
-    - cron: '23 */3 * * *'
+    - cron: '23 * * * *'
   workflow_dispatch:
 permissions:
   contents: read
@@ -11,16 +11,17 @@ concurrency:
 jobs:
   discover:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - name: Trigger bounded RSS discovery with retries
         env:
-          API_BASE_URL: ${{ secrets.SAHARSA_API_BASE_URL }}
+          API_BASE_URL: https://saharsa-news.onrender.com
           AUTOMATION_TOKEN: ${{ secrets.AUTOMATION_TOKEN }}
         run: |
+          set -euo pipefail
           test -n "$API_BASE_URL"
           test -n "$AUTOMATION_TOKEN"
-          curl --fail-with-body --silent --show-error --retry 2 --retry-delay 10 \
+          curl --fail-with-body --silent --show-error --connect-timeout 30 --max-time 600 --retry 2 --retry-delay 10 --retry-all-errors \
             -X POST "$API_BASE_URL/api/automation/discover" \
             -H "Authorization: Bearer $AUTOMATION_TOKEN" \
             -H 'Content-Type: application/json' \

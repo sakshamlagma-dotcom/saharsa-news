@@ -2,6 +2,27 @@
 
 The repository now has a Pages static site/Functions layer and a separate Cloudflare Worker API backed by Atlas. It is configured for free-tier use; provider accounts and secrets are still required before it can be deployed. No VPS or paid Render service is used.
 
+## Cloudflare project configuration
+
+There are two separate Cloudflare targets. Keep the Pages project rooted at the repository root so it can see both `public/` and the root `functions/` directory. Keep the API Worker rooted at `worker/`, where `worker/wrangler.toml` points to `src/index.js`.
+
+For the Pages project connected to this GitHub repository, use these Dashboard build settings:
+
+| Setting | Value |
+|---|---|
+| Project name | `saharsa-news` |
+| Production branch | `main` |
+| Framework preset | `None` |
+| Root directory | repository root (`/`, leave the field blank/default) |
+| Build command | `exit 0` |
+| Build output directory | `public` |
+
+Do not use `wrangler deploy` as the Pages build command. It is the Worker deploy command and, from the repository root, the root Pages config has no Worker `main` entrypoint. Pages Git integration is the only frontend deployment path. The GitHub Actions workflow deploys only the backend Worker from `worker/`, so pushes will not trigger a second Pages deployment.
+
+The root `wrangler.toml` is the Pages config and binds Pages Functions' `API` service to the separately deployed `saharsa-news-api` Worker. The `worker/wrangler.toml` is the API Worker config; do not point Pages at that file or move the Pages `functions/` directory into `public/`.
+
+For a Pages Git integration deployment, add **Settings → Bindings → Add → Service binding** with Variable name `API` and Service `saharsa-news-api`, then redeploy Pages. Keep this value aligned with the `API` binding in the root Pages config for local Wrangler development.
+
 ## One-time provider setup
 
 1. Create a Cloudflare Free account and a GitHub repository. For a private GitHub Free repository, Actions includes 2,000 standard runner minutes/month; public standard runners are free, but public scheduled workflows can be disabled after 60 days of no repository activity.
@@ -10,7 +31,9 @@ The repository now has a Pages static site/Functions layer and a separate Cloudf
 4. Create a Cloudflare API token with account permissions to edit Workers and Pages. Keep the token only in GitHub Actions secrets.
 5. Optional: create a Cloudinary Free account and a Gemini API key. Free Gemini requests may have content-use terms; omit sensitive data from prompts.
 
-## Initial deploy
+## Initial deployment setup
+
+Do not run these commands until deployment is approved. First create/deploy the API Worker, then connect the Pages Git integration and add its service binding. The `saharsa-news-api` service must exist before Pages can bind to it.
 
 From this project directory:
 
@@ -19,7 +42,6 @@ cd worker
 npm ci
 npx wrangler login
 npx wrangler secret put MONGODB_URI
-npx wrangler secret put SESSION_SECRET
 npx wrangler secret put AUTOMATION_TOKEN
 # Optional secrets:
 npx wrangler secret put GEMINI_API_KEY
@@ -29,15 +51,9 @@ npx wrangler secret put CLOUDINARY_API_SECRET
 npx wrangler deploy
 ```
 
-`SESSION_SECRET` and `AUTOMATION_TOKEN` must be long random strings. The Worker config deploys the hourly Cron Trigger. Add at least one permitted RSS source after creating the first admin.
+Create a strong random `AUTOMATION_TOKEN`; use the same value for the Render environment variable and GitHub Actions secret. `MONGODB_URI` is the Atlas driver URI for database `saharsa_news`. Cloudflare Worker Cron is disabled; the live Render service uses the hourly GitHub Actions scheduler. Add at least one permitted RSS source in the Render admin after creating the first admin.
 
-Create the Pages project once, then deploy:
-
-```sh
-cd ..
-./worker/node_modules/.bin/wrangler pages project create saharsa-news --production-branch main
-./worker/node_modules/.bin/wrangler pages deploy public --project-name saharsa-news --branch main
-```
+Create the Pages project through **Cloudflare Dashboard → Workers & Pages → Create application → Pages → Connect to Git** using the build settings above. Pages will deploy from the configured `main` branch. Do not run `wrangler pages project create` or `wrangler pages deploy` while using Pages Git integration.
 
 The Pages service binding named `API` points to the deployed Worker `saharsa-news-api`. The site will be available at `https://saharsa-news.pages.dev`; Pages supplies HTTPS. A custom domain is optional and domain registration may cost money.
 
@@ -50,7 +66,7 @@ Push this repository to GitHub with the default branch named `main`. Add reposit
 - `SAHARSA_API_BASE_URL` — the Worker URL, e.g. `https://saharsa-news-api.<your-subdomain>.workers.dev`
 - `AUTOMATION_TOKEN` — exactly the same value set as the Worker secret
 
-`.github/workflows/deploy.yml` deploys the Worker and Pages site on changes to `main`. `.github/workflows/discover.yml` triggers bounded discovery every three hours, with curl retries; run it manually from Actions for a first fetch. GitHub schedules are best effort and the Worker Cron is a secondary schedule.
+`.github/workflows/deploy.yml` deploys only the Worker on changes under `worker/`; Cloudflare Pages Git integration deploys the frontend on `main` changes. This prevents duplicate Pages deployments. `.github/workflows/discover.yml` calls the Render API hourly with bounded retries; run it manually from Actions for a first fetch. The Cloudflare Worker Cron is disabled so there is one scheduler for the Render newsroom.
 
 ## First run
 

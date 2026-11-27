@@ -10,8 +10,5 @@ enabled = true
 SITE_NAME = "Saharsa News"
 AI_MODEL = "gemini-2.5-flash"
 
-[triggers]
-crons = ["17 * * * *"]
-
-# Add MONGODB_URI, SESSION_SECRET, AUTOMATION_TOKEN, GEMINI_API_KEY, CLOUDINARY_*,
+# Add MONGODB_URI, AUTOMATION_TOKEN, GEMINI_API_KEY, CLOUDINARY_*,
 # FACEBOOK/INSTAGRAM tokens with `wrangler secret put`; never commit them here.

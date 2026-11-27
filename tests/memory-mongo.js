@@ -7,7 +7,9 @@ function matches(document, query = {}) {
     if (expected && typeof expected === 'object' && !(expected instanceof Date) && !(expected instanceof RegExp)) {
       if ('$in' in expected && !expected.$in.includes(actual)) return false;
       if ('$gte' in expected && !(actual >= expected.$gte)) return false;
+      if ('$lte' in expected && !(actual <= expected.$lte)) return false;
       if ('$lt' in expected && !(actual < expected.$lt)) return false;
+      if ('$exists' in expected && Boolean(actual !== undefined) !== expected.$exists) return false;
       if ('$regex' in expected && !(new RegExp(expected.$regex, expected.$options || '').test(String(actual ?? '')))) return false;
       return true;
     }
@@ -56,8 +58,16 @@ class MemoryCollection {
     }
     Object.assign(row, structuredClone(update.$set || {}));
     if (inserted) Object.assign(row, structuredClone(update.$setOnInsert || {}));
+    for (const [key, amount] of Object.entries(update.$inc || {})) row[key] = (Number(row[key]) || 0) + amount;
     this.rows.set(row._id, row);
     return { matchedCount: inserted ? 0 : 1, modifiedCount: 1, upsertedCount: inserted ? 1 : 0 };
+  }
+  async findOneAndUpdate(filter, update) {
+    const row = [...this.rows.values()].find(document => matches(document, filter));
+    if (!row) return null;
+    Object.assign(row, structuredClone(update.$set || {}));
+    for (const [key, amount] of Object.entries(update.$inc || {})) row[key] = (Number(row[key]) || 0) + amount;
+    return structuredClone(row);
   }
   async deleteOne(filter) {
     const row = [...this.rows.values()].find(document => matches(document, filter));
