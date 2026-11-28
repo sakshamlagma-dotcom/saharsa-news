@@ -1,12 +1,14 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import bcrypt from 'bcryptjs';
-import { createApp, safeMongoFailureDetails, validateStartupEnvironment } from '../server.js';
+import { createHash } from 'node:crypto';
+import { createApp, registerPostListenLifecycle, safeMongoFailureDetails, safeStartupFailureDetails, validateStartupEnvironment } from '../server.js';
 import { RssFeedError } from '../rss.js';
 import { MemoryDatabase } from './memory-mongo.js';
 
 const startupLogs = [];
-assert.throws(() => validateStartupEnvironment({ NODE_ENV: 'production', SESSION_SECRET: 'test-only-secret-0123456789012345' }, line => startupLogs.push(line)), error => error.code === 'MISSING_MONGODB_URI');
+assert.throws(() => validateStartupEnvironment({ NODE_ENV: 'production', SESSION_SECRET: 'test-only-secret-0123456789012345' }, line => startupLogs.push(line)), error => error.code === 'MISSING_MONGODB_URI' && error.startupStage === 'environment_validation');
 const missingUriLog = JSON.parse(startupLogs.at(-1));
 assert.equal(missingUriLog.mongodbUriConfigured, false);
 assert.equal(startupLogs.join('\n').includes('test-only-secret'), false, 'startup diagnostics must not include secrets');
@@ -20,6 +22,29 @@ assert.equal(authFailure.errorCodeName, 'AtlasError');
 assert.equal(JSON.stringify(authFailure).includes('not-for-logs'), false, 'Mongo diagnostics must not include raw server messages');
 assert.equal(safeMongoFailureDetails({ name: 'MongoServerError', message: 'IP address 192.0.2.4 is not allowed to access this cluster' }).failureCategory, 'atlas_network_access_denied');
 assert.equal(safeMongoFailureDetails({ name: 'MongoServerSelectionError', cause: { name: 'MongoNetworkError' } }).failureCategory, 'network_or_server_selection_failed');
+const startupFailure = safeStartupFailureDetails({
+  name: 'MongoRuntimeError', code: 'ECONNRESET', startupStage: 'mongodb_initialization',
+  cause: { name: 'MongoNetworkError', code: 'ETIMEDOUT', message: 'credential=not-for-logs' }
+});
+assert.deepEqual(startupFailure, {
+  stage: 'mongodb_initialization', errorType: 'MongoRuntimeError', errorCode: 'ECONNRESET',
+  causeType: 'MongoNetworkError', causeCode: 'ETIMEDOUT'
+});
+assert.equal(JSON.stringify(startupFailure).includes('not-for-logs'), false, 'startup diagnostics exclude raw exception messages');
+assert.equal(safeStartupFailureDetails({ startupStage: 'mongodb_initialization', cause: { name: 'credential=not-for-logs' } }).causeType, 'Error');
+
+const lifecycleLogs = [];
+const lifecycleServer = new EventEmitter();
+lifecycleServer.close = callback => callback?.();
+const lifecycleClient = { close: async () => {} };
+const lifecycleProcess = new EventEmitter();
+lifecycleProcess.exitCode = 0;
+lifecycleProcess.exit = code => { lifecycleProcess.exitCode = code; };
+registerPostListenLifecycle({ server: lifecycleServer, client: lifecycleClient, processRef: lifecycleProcess, log: line => lifecycleLogs.push(line) });
+lifecycleServer.emit('error', Object.assign(new Error('secret=not-for-logs'), { code: 'EADDRINUSE' }));
+assert.equal(lifecycleProcess.exitCode, 1);
+assert.equal(JSON.stringify(lifecycleLogs).includes('not-for-logs'), false);
+assert.equal(lifecycleLogs.some(line => line.includes('startup_failed') || line.includes('POST_LISTEN_INITIALIZATION_FAILED')), false);
 
 const db = new MemoryDatabase();
 const testFeedItems = [
@@ -30,7 +55,8 @@ const rssFetcher = async url => {
   if (url.includes('invalid-feed.example.test')) throw new RssFeedError('INVALID_FEED', 'Response is not an RSS or Atom feed.');
   return { title: 'Test feed', items: testFeedItems, finalUrl: url };
 };
-const app = createApp({ db, rssFetcher, env: { ...process.env, NODE_ENV: 'test', SESSION_SECRET: 'integration-test-session-secret-0123456789', AUTOMATION_TOKEN: 'integration-test-automation-token' } });
+const cloudinaryTestSecret = 'integration-test-cloudinary-secret';
+const app = createApp({ db, rssFetcher, env: { ...process.env, NODE_ENV: 'test', SESSION_SECRET: 'integration-test-session-secret-0123456789', AUTOMATION_TOKEN: 'integration-test-automation-token', CLOUDINARY_CLOUD_NAME: 'integration-test-cloud', CLOUDINARY_API_KEY: 'integration-test-api-key', CLOUDINARY_API_SECRET: cloudinaryTestSecret } });
 const server = app.listen(0, '127.0.0.1');
 await new Promise((resolve, reject) => { server.once('listening', resolve); server.once('error', reject); });
 const base = `http://127.0.0.1:${server.address().port}`;
@@ -51,18 +77,35 @@ try {
   const adminPage = await fetch(`${base}/admin`);
   assert.equal(adminPage.status, 200);
   assert.match(await adminPage.text(), /RSS Feed प्रबंधन/, 'the /admin route serves the current RSS management UI');
+  assert.match(adminPage.headers.get('content-security-policy'), /connect-src 'self' https:\/\/api\.cloudinary\.com/, 'the admin image uploader can connect to Cloudinary');
   assert.equal((await request('/api/sources')).status, 401, 'RSS management requires an authenticated SUPER_ADMIN');
+  assert.equal((await request('/api/media/sign', { method: 'POST' })).status, 401, 'Cloudinary upload signing requires an authenticated newsroom user');
 
   const first = await request('/api/auth/me');
   assert.equal((await first.json()).setupRequired, true);
   const setup = await request('/api/auth/setup', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'admin@example.test', password: 'strong-test-password-123' }) });
   assert.equal(setup.status, 201);
 
-  const created = await request('/api/articles', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: 'सहरसा में स्कूलों की नई पहल', body: 'सहरसा जिले के स्कूलों में आज एक नई शैक्षणिक पहल शुरू की गई है। अधिकारियों ने कार्यक्रम की जानकारी साझा की।', category: 'शिक्षा', location: 'Saharsa City', featuredImage: 'https://images.example.test/manual.jpg' }) });
+  const mediaSignatureResponse = await request('/api/media/sign', { method: 'POST' });
+  assert.equal(mediaSignatureResponse.status, 200);
+  const mediaSignature = await mediaSignatureResponse.json();
+  assert.equal(mediaSignature.cloudName, 'integration-test-cloud');
+  assert.equal(mediaSignature.apiKey, 'integration-test-api-key');
+  assert.equal(mediaSignature.folder, 'saharsa-news');
+  assert.match(mediaSignature.signature, /^[a-f0-9]{40}$/);
+  assert.equal(mediaSignature.signature, createHash('sha1').update(`folder=saharsa-news&timestamp=${mediaSignature.timestamp}${cloudinaryTestSecret}`).digest('hex'));
+  assert.equal(JSON.stringify(mediaSignature).includes(cloudinaryTestSecret), false, 'Cloudinary upload signatures do not expose the API secret');
+
+  const created = await request('/api/articles', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: 'सहरसा में स्कूलों की नई पहल', body: 'सहरसा जिले के स्कूलों में आज एक नई शैक्षणिक पहल शुरू की गई है। अधिकारियों ने कार्यक्रम की जानकारी साझा की।', category: 'शिक्षा', location: 'Saharsa City', featuredImage: 'https://images.example.test/manual.jpg', imageCaption: 'विद्यालय कार्यक्रम की तस्वीर', imageAlt: 'विद्यालय में छात्र कार्यक्रम में भाग लेते हुए', isFeatured: true, isBreaking: true, isTrending: true }) });
   assert.equal(created.status, 201);
   const article = await created.json();
   assert.equal(article.status, 'NEW');
   assert.equal(article.featuredImage, 'https://images.example.test/manual.jpg');
+  assert.equal(article.imageCaption, 'विद्यालय कार्यक्रम की तस्वीर');
+  assert.equal(article.imageAlt, 'विद्यालय में छात्र कार्यक्रम में भाग लेते हुए');
+  assert.equal(article.isFeatured, true);
+  assert.equal(article.isBreaking, true);
+  assert.equal(article.isTrending, true);
   const invalidImage = await request('/api/articles', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: 'सहरसा में स्कूलों की दूसरी पहल', body: 'सहरसा जिले के स्कूलों में कार्यक्रम का सत्यापित विवरण साझा किया गया है।', category: 'शिक्षा', location: 'Saharsa City', featuredImage: 'javascript:alert(1)' }) });
   assert.equal(invalidImage.status, 400, 'unsafe image URLs are rejected');
 
@@ -81,7 +124,11 @@ try {
   assert.equal(published.status, 200);
 
   const publicList = await fetch(base + '/api/public/articles');
-  assert.equal((await publicList.json()).length, 1);
+  const publicArticles = await publicList.json();
+  assert.equal(publicArticles.length, 1);
+  assert.equal(publicArticles[0].isBreaking, true);
+  assert.equal(publicArticles[0].isFeatured, true);
+  assert.equal(publicArticles[0].isTrending, true);
   const feed = await fetch(base + '/feed.xml');
   assert.equal(feed.status, 200);
   assert.match(await feed.text(), /<rss/);
@@ -93,14 +140,21 @@ try {
   const articleHtml = await articlePage.text();
   assert.match(articleHtml, /NewsArticle/);
   assert.match(articleHtml, /https:\/\/images\.example\.test\/manual\.jpg/);
+  assert.match(articleHtml, /alt="विद्यालय में छात्र कार्यक्रम में भाग लेते हुए"/);
+  assert.match(articleHtml, /विद्यालय कार्यक्रम की तस्वीर/);
   assert.match(articleHtml, /class="image-fallback" hidden/);
 
   const list = await request('/api/articles');
   assert.equal((await list.json()).total, 2);
-  const edit = await request(`/api/articles/${article.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ summary: 'संपादित सारांश', featuredImage: 'https://images.example.test/edited.jpg' }) });
+  const edit = await request(`/api/articles/${article.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ summary: 'संपादित सारांश', featuredImage: 'https://images.example.test/edited.jpg', imageCaption: 'नई तस्वीर', imageAlt: 'कार्यक्रम का दृश्य', isFeatured: false, isBreaking: false, isTrending: false }) });
   const editedArticle = await edit.json();
   assert.equal(editedArticle.summary, 'संपादित सारांश');
   assert.equal(editedArticle.featuredImage, 'https://images.example.test/edited.jpg');
+  assert.equal(editedArticle.imageCaption, 'नई तस्वीर');
+  assert.equal(editedArticle.imageAlt, 'कार्यक्रम का दृश्य');
+  assert.equal(editedArticle.isFeatured, false);
+  assert.equal(editedArticle.isBreaking, false);
+  assert.equal(editedArticle.isTrending, false);
   const removeImage = await request(`/api/articles/${article.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ featuredImage: '' }) });
   assert.equal((await removeImage.json()).featuredImage, '', 'an editor can remove a wrong image');
   const sources = await request('/api/sources', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Test RSS', url: 'https://feeds.example.test/feed.xml', category: 'शिक्षा', region: 'Saharsa City', enabled: true }) });

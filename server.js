@@ -5,7 +5,7 @@ import session from 'express-session';
 import rateLimit from 'express-rate-limit';
 import bcrypt from 'bcryptjs';
 import { MongoClient } from 'mongodb';
-import { randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { canonicalizeArticleUrl, feedErrorMessage, fetchRssFeed, normalizeTitle, safeImageUrl, validateFeedUrl } from './rss.js';
@@ -17,6 +17,7 @@ const sensitive = /अपराध|हत्या|दुर्घटना|आ�
 const collectionNames = { users: 'render_users', sessions: 'render_sessions', articles: 'render_articles', sources: 'render_news_sources', audit: 'render_audit_logs' };
 let activeDiscoveryPromise = null;
 const rssRegions = [...locations, 'Kosi Region', 'Bihar', 'National'];
+const startupStages = new Set(['environment_validation', 'mongodb_initialization', 'http_initialization', 'post_listen_initialization']);
 
 function now() { return new Date().toISOString(); }
 function articleRow(row) {
@@ -25,10 +26,18 @@ function articleRow(row) {
     seoTitle: row.seo_title || '', seoDescription: row.seo_description || '', sourceUrl: row.source_url || '',
     sourceName: row.source_name || '', category: row.category, location: row.location, status: row.status,
     featuredImage: row.featured_image || row.featuredImage || '',
+    imageCaption: row.image_caption || row.imageCaption || '',
+    imageAlt: row.image_alt || row.imageAlt || row.title || '',
+    isFeatured: row.is_featured === true || row.is_featured === 1 || row.isFeatured === true,
+    isBreaking: row.is_breaking === true || row.is_breaking === 1 || row.isBreaking === true,
+    isTrending: row.is_trending === true || row.is_trending === 1 || row.isTrending === true,
     region: row.rss_region || row.location, sourcePublishedAt: row.source_published_at || null, discoveredAt: row.discovered_at || null,
     verified: Boolean(row.verified), authorId: row.author_id || null, createdAt: row.created_at,
     updatedAt: row.updated_at, publishedAt: row.published_at || null
   } : null;
+}
+function parseBoolean(value) {
+  return value === true || value === 1 || value === 'true' || value === '1' || value === 'on';
 }
 function plainDocument(value) {
   if (!value) return null;
@@ -47,15 +56,29 @@ function escapeHtml(value) {
 function escapeXml(value) {
   return String(value || '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c]));
 }
-function startupError(code, message) {
+function startupError(code, message, stage, cause) {
   const error = new Error(message);
   error.code = code;
   error.safeMessage = message;
+  if (stage) error.startupStage = stage;
+  if (cause) error.cause = cause;
   return error;
 }
 function safeDriverCode(value) {
   if (typeof value === 'number') return value;
   return typeof value === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(value) ? value : undefined;
+}
+function safeErrorType(value) {
+  return typeof value === 'string' && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(value) ? value : 'Error';
+}
+export function safeStartupFailureDetails(error) {
+  return {
+    stage: startupStages.has(error?.startupStage) ? error.startupStage : 'unknown',
+    errorType: safeErrorType(error?.name),
+    errorCode: safeDriverCode(error?.code),
+    causeType: error?.cause ? safeErrorType(error.cause.name) : undefined,
+    causeCode: error?.cause ? safeDriverCode(error.cause.code) : undefined
+  };
 }
 
 function safeTokenMatches(provided, configured) {
@@ -230,10 +253,10 @@ export function validateStartupEnvironment(env = process.env, log = message => c
     sessionSecretConfigured: Boolean(env.SESSION_SECRET),
     sessionSecretValid
   }));
-  if (!uriConfigured) throw startupError('MISSING_MONGODB_URI', 'Required environment variable MONGODB_URI is missing.');
-  if (!uriScheme) throw startupError('INVALID_MONGODB_URI_FORMAT', 'MONGODB_URI must use mongodb:// or mongodb+srv://. Its value was not logged.');
-  if (production && !sessionSecretValid) throw startupError('INVALID_SESSION_SECRET', 'SESSION_SECRET must be set to at least 32 characters in production. Its value was not logged.');
-  if (!portValid) throw startupError('INVALID_PORT', 'PORT must be an integer from 1 through 65535.');
+  if (!uriConfigured) throw startupError('MISSING_MONGODB_URI', 'Required environment variable MONGODB_URI is missing.', 'environment_validation');
+  if (!uriScheme) throw startupError('INVALID_MONGODB_URI_FORMAT', 'MONGODB_URI must use mongodb:// or mongodb+srv://. Its value was not logged.', 'environment_validation');
+  if (production && !sessionSecretValid) throw startupError('INVALID_SESSION_SECRET', 'SESSION_SECRET must be set to at least 32 characters in production. Its value was not logged.', 'environment_validation');
+  if (!portValid) throw startupError('INVALID_PORT', 'PORT must be an integer from 1 through 65535.', 'environment_validation');
   return { port };
 }
 
@@ -314,6 +337,8 @@ export function createApp({ db, env = process.env, rssFetcher = fetchRssFeed } =
       id, title: fields.title, slug: slugifyHindi(fields.title), body: fields.body, summary: '', seo_title: '', seo_description: '',
       source_url: fields.sourceUrl || '', source_name: fields.sourceName || '', category: fields.category, location: fields.location,
       featured_image: fields.featuredImage || '',
+      image_caption: fields.imageCaption || '', image_alt: fields.imageAlt || fields.title,
+      is_featured: Boolean(fields.isFeatured), is_breaking: Boolean(fields.isBreaking), is_trending: Boolean(fields.isTrending),
       status: fields.status, verified: 0, author_id: req.session.user?.id || null, created_at: timestamp, updated_at: timestamp, published_at: null
     };
     await articles.insertOne(row);
@@ -322,7 +347,7 @@ export function createApp({ db, env = process.env, rssFetcher = fetchRssFeed } =
 
   app.disable('x-powered-by');
   app.set('trust proxy', 1);
-  app.use(helmet({ contentSecurityPolicy: { directives: { defaultSrc: ["'self'"], scriptSrc: ["'self'"], styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'], fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'], imgSrc: ["'self'", 'https:', 'data:'], connectSrc: ["'self'"], objectSrc: ["'none'"], baseUri: ["'self'"] } }, crossOriginEmbedderPolicy: false }));
+  app.use(helmet({ contentSecurityPolicy: { directives: { defaultSrc: ["'self'"], scriptSrc: ["'self'"], styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'], fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'], imgSrc: ["'self'", 'https:', 'data:'], connectSrc: ["'self'", 'https://api.cloudinary.com'], objectSrc: ["'none'"], baseUri: ["'self'"] } }, crossOriginEmbedderPolicy: false }));
   app.use(express.json({ limit: '1mb' }));
   app.use(session({ store: new MongoSessionStore(sessions), secret: env.SESSION_SECRET || 'dev-only-change-this-secret-before-deploy', resave: false, saveUninitialized: false, cookie: { httpOnly: true, sameSite: 'lax', secure: env.NODE_ENV === 'production', maxAge: 1000 * 60 * 60 * 12 } }));
   app.use('/api', rateLimit({ windowMs: 15 * 60 * 1000, limit: 600, standardHeaders: true, legacyHeaders: false }));
@@ -338,6 +363,17 @@ export function createApp({ db, env = process.env, rssFetcher = fetchRssFeed } =
     }
   });
   app.get('/api/config', async (_req, res) => res.json({ siteName: env.SITE_NAME || 'Saharsa News', tagline: 'सहरसा की हर खबर, सबसे पहले।', locations, categories, rssRegions, integrations: { rss: Boolean(await countEnabledSources() || env.RSS_FEEDS?.trim()), ai: Boolean(env.GEMINI_API_KEY || env.OPENAI_API_KEY), cloudinary: Boolean(env.CLOUDINARY_CLOUD_NAME && env.CLOUDINARY_API_KEY && env.CLOUDINARY_API_SECRET), facebook: Boolean(env.META_PAGE_ACCESS_TOKEN && env.META_PAGE_ID), instagram: Boolean(env.INSTAGRAM_ACCOUNT_ID && env.META_PAGE_ACCESS_TOKEN) } }));
+  app.post('/api/media/sign', requireRole('SUPER_ADMIN', 'ADMIN', 'EDITOR'), (req, res) => {
+    if (!env.CLOUDINARY_CLOUD_NAME || !env.CLOUDINARY_API_KEY || !env.CLOUDINARY_API_SECRET) {
+      return res.status(503).json({ error: 'Cloudinary image uploads are not configured.' });
+    }
+    const timestamp = Math.floor(Date.now() / 1000);
+    const folder = 'saharsa-news';
+    const signature = createHash('sha1')
+      .update(`folder=${folder}&timestamp=${timestamp}${env.CLOUDINARY_API_SECRET}`)
+      .digest('hex');
+    res.json({ cloudName: env.CLOUDINARY_CLOUD_NAME, apiKey: env.CLOUDINARY_API_KEY, timestamp, folder, signature });
+  });
   app.get('/api/auth/me', async (req, res) => res.json({ user: req.session.user || null, setupRequired: !(await users.findOne({}, { projection: { _id: 1 } })) }));
   app.post('/api/auth/setup', loginLimiter, async (req, res) => {
     if (await users.findOne({}, { projection: { _id: 1 } })) return res.status(409).json({ error: 'प्रारंभिक admin पहले से बनाया जा चुका है।' });
@@ -419,15 +455,25 @@ export function createApp({ db, env = process.env, rssFetcher = fetchRssFeed } =
     const imageValue = String(req.body?.featuredImage || '').trim();
     const featuredImage = safeImageUrl(imageValue);
     if (imageValue && !featuredImage) return res.status(400).json({ error: 'फीचर इमेज के लिए सार्वजनिक HTTP(S) URL आवश्यक है।' });
-    const article = await createArticle(req, { title, body, sourceUrl: String(req.body?.sourceUrl || ''), sourceName: String(req.body?.sourceName || 'स्थानीय डेस्क'), featuredImage, category, location, status });
+    const article = await createArticle(req, {
+      title, body, sourceUrl: String(req.body?.sourceUrl || ''), sourceName: String(req.body?.sourceName || 'स्थानीय डेस्क'),
+      featuredImage, imageCaption: String(req.body?.imageCaption || '').trim().slice(0, 200),
+      imageAlt: String(req.body?.imageAlt || '').trim().slice(0, 200) || title,
+      isFeatured: parseBoolean(req.body?.isFeatured), isBreaking: parseBoolean(req.body?.isBreaking),
+      isTrending: parseBoolean(req.body?.isTrending), category, location, status
+    });
     await addAudit(req, 'article_created', 'article', article.id, { status });
     res.status(201).json(article);
   });
   app.patch('/api/articles/:id', requireRole('SUPER_ADMIN', 'ADMIN', 'EDITOR'), async (req, res) => {
     const row = await articles.findOne({ id: req.params.id });
     if (!row) return res.sendStatus(404);
-    const allowed = ['title', 'body', 'summary', 'seoTitle', 'seoDescription', 'category', 'location', 'featuredImage'];
-    const fields = { title: 'title', body: 'body', summary: 'summary', seoTitle: 'seo_title', seoDescription: 'seo_description', category: 'category', location: 'location', featuredImage: 'featured_image' };
+    const allowed = ['title', 'body', 'summary', 'seoTitle', 'seoDescription', 'category', 'location', 'featuredImage', 'imageCaption', 'imageAlt', 'isFeatured', 'isBreaking', 'isTrending'];
+    const fields = {
+      title: 'title', body: 'body', summary: 'summary', seoTitle: 'seo_title', seoDescription: 'seo_description',
+      category: 'category', location: 'location', featuredImage: 'featured_image', imageCaption: 'image_caption', imageAlt: 'image_alt',
+      isFeatured: 'is_featured', isBreaking: 'is_breaking', isTrending: 'is_trending'
+    };
     const updates = {};
     for (const key of allowed) {
       if (req.body?.[key] === undefined) continue;
@@ -435,6 +481,10 @@ export function createApp({ db, env = process.env, rssFetcher = fetchRssFeed } =
         const value = String(req.body[key] || '').trim();
         if (value && !safeImageUrl(value)) return res.status(400).json({ error: 'फीचर इमेज के लिए सार्वजनिक HTTP(S) URL आवश्यक है।' });
         updates[fields[key]] = value ? safeImageUrl(value) : '';
+      } else if (['isFeatured', 'isBreaking', 'isTrending'].includes(key)) {
+        updates[fields[key]] = parseBoolean(req.body[key]);
+      } else if (['imageCaption', 'imageAlt'].includes(key)) {
+        updates[fields[key]] = String(req.body[key] || '').trim().slice(0, 200);
       } else {
         updates[fields[key]] = key === 'title' || key === 'body' ? text(req.body[key]) : String(req.body[key]);
       }
@@ -626,7 +676,7 @@ export function createApp({ db, env = process.env, rssFetcher = fetchRssFeed } =
     const url = `${origin}/article/${encodeURIComponent(article.slug)}`;
     const schemaJson = JSON.stringify({ '@context': 'https://schema.org', '@type': 'NewsArticle', headline: article.title, description, image: article.featuredImage ? [article.featuredImage] : undefined, datePublished: article.publishedAt, dateModified: article.updatedAt, author: { '@type': 'Organization', name: env.SITE_NAME || 'Saharsa News' }, publisher: { '@type': 'Organization', name: env.SITE_NAME || 'Saharsa News' }, mainEntityOfPage: url }).replace(/</g, '\\u003c');
     const imageMeta = article.featuredImage ? `<meta property="og:image" content="${escapeHtml(article.featuredImage)}"><meta name="twitter:image" content="${escapeHtml(article.featuredImage)}">` : '';
-    const image = article.featuredImage ? `<div class="article-image-wrap"><img class="article-image" data-src="${escapeHtml(article.featuredImage)}" alt="${escapeHtml(article.title)}" loading="eager"><div class="image-fallback" hidden>सहरसा <b>NEWS</b></div></div>` : '';
+    const image = article.featuredImage ? `<figure class="article-image-wrap"><img class="article-image" data-src="${escapeHtml(article.featuredImage)}" alt="${escapeHtml(article.imageAlt || article.title)}" loading="eager"><div class="image-fallback" hidden>सहरसा <b>NEWS</b></div>${article.imageCaption ? `<figcaption>${escapeHtml(article.imageCaption)}</figcaption>` : ''}</figure>` : '';
     res.type('html').send(`<!doctype html><html lang="hi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(article.seoTitle || article.title)} | Saharsa News</title><meta name="description" content="${escapeHtml(description)}"><link rel="canonical" href="${escapeHtml(url)}"><meta property="og:type" content="article"><meta property="og:title" content="${escapeHtml(article.title)}"><meta property="og:description" content="${escapeHtml(description)}"><meta property="og:url" content="${escapeHtml(url)}">${imageMeta}<meta name="twitter:card" content="${article.featuredImage ? 'summary_large_image' : 'summary'}"><script type="application/ld+json">${schemaJson}</script><link rel="stylesheet" href="/portal.css"><script src="/article.js" defer></script></head><body><header><a class="logo" href="/">सहरसा <b>NEWS</b></a><nav><a href="/">होम</a><a href="/#latest">ताज़ा खबरें</a><a href="/admin">न्यूज़रूम</a></nav></header><main class="article"><a class="back" href="/">← मुख्य पृष्ठ</a><div class="crumb">होम / ${escapeHtml(article.category)} / ${escapeHtml(article.location)}</div><span class="tag">${escapeHtml(article.category)} · ${escapeHtml(article.location)}</span><h1>${escapeHtml(article.title)}</h1><p class="summary">${escapeHtml(description)}</p>${image}<div class="byline">Saharsa News Desk · ${new Date(article.publishedAt).toLocaleDateString('hi-IN', { dateStyle: 'long' })} · ${escapeHtml(article.sourceName || 'स्रोत विवरण')}</div><div class="body">${escapeHtml(article.body).split(/\n+/).map(paragraph => `<p>${paragraph}</p>`).join('')}</div><div class="source">मूल स्रोत: ${article.sourceUrl ? `<a href="${escapeHtml(article.sourceUrl)}" rel="nofollow noopener">${escapeHtml(article.sourceName || new URL(article.sourceUrl).hostname)}</a>` : escapeHtml(article.sourceName || 'स्थानीय डेस्क')}</div></main><footer>सहरसा की हर खबर, सबसे पहले।</footer></body></html>`);
   });
   app.get('/feed.xml', async (_req, res) => {
@@ -665,11 +715,61 @@ export async function connectDatabase(env = process.env, { validated = false } =
     await client?.close().catch(() => {});
     console.error(JSON.stringify({
       event: 'mongodb_startup_failed',
+      stage: 'mongodb_initialization',
       ...safeMongoFailureDetails(error),
-      causeType: typeof error?.cause?.name === 'string' ? error.cause.name : undefined,
+      causeType: error?.cause ? safeErrorType(error.cause.name) : undefined,
       causeCode: safeDriverCode(error?.cause?.code)
     }));
-    throw startupError('MONGODB_CONNECT_FAILED', 'MongoDB connection failed. Check Atlas network access and the Render MONGODB_URI setting; secret values were not logged.');
+    throw startupError('MONGODB_CONNECT_FAILED', 'MongoDB connection failed. Check Atlas network access and the Render MONGODB_URI setting; secret values were not logged.', 'mongodb_initialization', error);
+  }
+}
+
+export function registerPostListenLifecycle({ server, client, processRef = process, log = message => console.info(message) } = {}) {
+  if (!server || !client) {
+    console.error(JSON.stringify({ event: 'post_listen_initialization_failed', errorCode: 'INVALID_LIFECYCLE_STATE' }));
+    return;
+  }
+
+  let shuttingDown = false;
+  const shutdown = signal => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    log(JSON.stringify({ event: 'server_shutdown_started', signal, stage: 'shutdown' }));
+    server.close(() => {
+      client.close().catch(() => {}).finally(() => {
+        if (typeof processRef.exit === 'function') processRef.exit(0);
+        else processRef.exitCode = 0;
+      });
+    });
+  };
+
+  try {
+    processRef.once('SIGTERM', () => shutdown('SIGTERM'));
+    processRef.once('SIGINT', () => shutdown('SIGINT'));
+  } catch (error) {
+    console.error(JSON.stringify({
+      event: 'post_listen_initialization_failed',
+      errorType: safeErrorType(error?.name),
+      errorCode: safeDriverCode(error?.code) || 'SIGNAL_HANDLER_SETUP_FAILED'
+    }));
+  }
+
+  try {
+    server.once('error', error => {
+      const code = safeDriverCode(error?.code) || 'HTTP_RUNTIME_ERROR';
+      console.error(JSON.stringify({
+        event: 'http_runtime_error',
+        errorType: safeErrorType(error?.name),
+        errorCode: code
+      }));
+      processRef.exitCode = 1;
+    });
+  } catch (error) {
+    console.error(JSON.stringify({
+      event: 'post_listen_initialization_failed',
+      errorType: safeErrorType(error?.name),
+      errorCode: safeDriverCode(error?.code) || 'SERVER_ERROR_HANDLER_SETUP_FAILED'
+    }));
   }
 }
 
@@ -681,26 +781,48 @@ export async function startServer(env = process.env) {
     const app = createApp({ db, env });
     server = app.listen(port, '0.0.0.0');
     await new Promise((resolve, reject) => {
-      server.once('listening', resolve);
-      server.once('error', reject);
+      const onListening = () => {
+        server.off('error', onError);
+        resolve();
+      };
+      const onError = error => {
+        server.off('listening', onListening);
+        reject(error);
+      };
+      server.once('listening', onListening);
+      server.once('error', onError);
     });
   } catch (error) {
     if (server) await new Promise(resolve => server.close(resolve));
     await client.close().catch(() => {});
     const code = safeDriverCode(error?.code) || 'HTTP_LISTEN_FAILED';
-    console.error(JSON.stringify({ event: 'http_startup_failed', errorCode: code, errorType: error?.name || 'Error' }));
-    throw startupError('HTTP_LISTEN_FAILED', 'HTTP server could not bind to the configured PORT.');
+    error.startupStage = 'http_initialization';
+    console.error(JSON.stringify({ event: 'http_startup_failed', ...safeStartupFailureDetails(error), errorCode: code }));
+    throw startupError('HTTP_LISTEN_FAILED', 'HTTP server could not bind to the configured PORT.', 'http_initialization', error);
   }
   console.info(JSON.stringify({ event: 'http_listening', host: '0.0.0.0', port, nodeVersion: process.versions.node }));
-  const shutdown = () => server.close(() => client.close().finally(() => process.exit(0)));
-  process.once('SIGTERM', shutdown);
-  process.once('SIGINT', shutdown);
+  registerPostListenLifecycle({ server, client });
   return { app, server, client };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   startServer().catch(error => {
-    console.error(JSON.stringify({ event: 'startup_failed', code: safeDriverCode(error?.code) || 'STARTUP_FAILED', message: error?.safeMessage || 'Server startup failed. See the sanitized startup diagnostics above.' }));
+    if (error?.startupStage === 'post_listen_initialization') {
+      console.error(JSON.stringify({
+        event: 'post_listen_initialization_failed',
+        ...safeStartupFailureDetails(error),
+        code: safeDriverCode(error?.code) || 'POST_LISTEN_INITIALIZATION_FAILED',
+        message: 'The HTTP server started, but post-listen setup failed.'
+      }));
+      process.exitCode = 1;
+      return;
+    }
+    console.error(JSON.stringify({
+      event: 'startup_failed',
+      ...safeStartupFailureDetails(error),
+      code: safeDriverCode(error?.code) || 'STARTUP_FAILED',
+      message: error?.safeMessage || 'Server startup failed. See the sanitized startup diagnostics above.'
+    }));
     process.exitCode = 1;
   });
 }
